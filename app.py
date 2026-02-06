@@ -1,0 +1,839 @@
+"""
+Sokcho Order Processing System v13.8 (Complete)
+REPLACE_REGEX_SUB (///), Weight Lock, Individual Download.
+- config.xlsx: ProductRoute, OptionRules, OutputLayout (Korean headers normalized)
+- Password-protected Excel (msoffcrypto), CSV with encoding auto-detect
+- Route → Option Rules (_calculated_weight, _is_formatted) → Merge & Sort → Export
+"""
+import re
+from datetime import datetime
+from io import BytesIO
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+try:
+    import msoffcrypto
+    HAS_MSOFFCRYPTO = True
+except ImportError:
+    HAS_MSOFFCRYPTO = False
+
+# --- Column names (order data) ---
+HEADER_KEYWORDS = ["상품명", "수취인명", "옵션정보"]
+FILTER_PHRASE = "다운로드 받은 파일로 '엑셀 일괄발송' 처리하는 방법"
+QTY_COLUMN_INDEX = 12
+DEFAULT_PHONE_COL = "수취인연락처1"
+ALT_PHONE_COL = "구매자연락처"
+
+
+def _strip_columns(df):
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def find_header_row(preview_df):
+    for i in range(len(preview_df)):
+        row_vals = preview_df.iloc[i].astype(str).str.strip().tolist()
+        row_text = " ".join(row_vals)
+        if all(kw in row_text for kw in HEADER_KEYWORDS):
+            return i
+    return 0
+
+
+def ensure_quantity_column(df):
+    if "수량" in df.columns:
+        return df
+    if df.shape[1] <= QTY_COLUMN_INDEX:
+        return df
+    df.rename(columns={df.columns[QTY_COLUMN_INDEX]: "수량"}, inplace=True)
+    return df
+
+
+# ============== Config Loader ==============
+
+@st.cache_data(ttl=60)
+def _load_config_cached(config_path: str, _raw_hash: str):
+    return _load_config_impl(config_path, password=None)
+
+
+def _load_config_impl(config_path: str, password=None):
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"설정 파일을 찾을 수 없습니다: {config_path}")
+
+    raw = path.read_bytes()
+    if HAS_MSOFFCRYPTO:
+        bio = BytesIO(raw)
+        office_file = msoffcrypto.OfficeFile(bio)
+        if office_file.is_encrypted():
+            if not (password and str(password).strip()):
+                raise ValueError("설정 파일이 암호화되어 있습니다. 비밀번호를 입력하세요.")
+            try:
+                office_file.load_key(password=str(password).strip())
+                decrypted = BytesIO()
+                office_file.decrypt(decrypted)
+                decrypted.seek(0)
+                raw = decrypted.getvalue()
+            except Exception as e:
+                raise ValueError("설정 파일 비밀번호가 올바르지 않습니다.") from e
+
+    xl = pd.ExcelFile(BytesIO(raw))
+    required_sheets = ["ProductRoute", "OptionRules", "OutputLayout"]
+    missing = [s for s in required_sheets if s not in xl.sheet_names]
+    if missing:
+        raise ValueError(f"설정 시트 누락: {missing}. 필요: {required_sheets}")
+
+    product_route = pd.read_excel(xl, sheet_name="ProductRoute")
+    option_rules = pd.read_excel(xl, sheet_name="OptionRules")
+    output_layout = pd.read_excel(xl, sheet_name="OutputLayout")
+
+    _strip_columns(product_route)
+    _strip_columns(option_rules)
+    _strip_columns(output_layout)
+
+    _debug_option_raw_headers = option_rules.columns.tolist()
+
+    def _norm_product_route(df):
+        rename_map = {}
+        for col in df.columns:
+            c = str(col).strip()
+            if "우선순위" in c:
+                rename_map[col] = "Priority"
+            elif "키워드" in c:
+                rename_map[col] = "Keyword"
+            elif "양식명칭" in c:
+                rename_map[col] = "TargetVendorID"
+        return df.rename(columns=rename_map) if rename_map else df
+
+    def _norm_option_rules(df):
+        rename_map = {}
+        for col in df.columns:
+            c = str(col).strip()
+            if "순서" in c:
+                rename_map[col] = "Order"
+            elif "설정값" in c or "Parameter" in c:
+                rename_map[col] = "Parameter"
+            elif "명령" in c or "Action" in c or "ActionType" in c:
+                rename_map[col] = "ActionType"
+            elif "적용대상" in c or "Target" in c or "TargetKeyword" in c:
+                rename_map[col] = "TargetKeyword"
+            elif "양식" in c or "Apply" in c or "양식명칭" in c:
+                rename_map[col] = "ApplyTo"
+            elif "Description" in c or "설명" in c:
+                rename_map[col] = "Description"
+        return df.rename(columns=rename_map) if rename_map else df
+
+    def _norm_output_layout(df):
+        rename_map = {}
+        for col in df.columns:
+            c = str(col).strip()
+            if "양식명칭" in c:
+                rename_map[col] = "VendorID"
+            elif "파일명" in c:
+                rename_map[col] = "FilePrefix"
+            elif "열" in c:
+                rename_map[col] = "ExcelCol"
+            elif "헤더명" in c:
+                rename_map[col] = "HeaderName"
+            elif "매핑데이터" in c:
+                rename_map[col] = "SourceCol"
+            elif "고정값" in c:
+                rename_map[col] = "HardcodedValue"
+        return df.rename(columns=rename_map) if rename_map else df
+
+    def _strip_all_strings(df):
+        for col in df.columns:
+            if df[col].dtype == object or df[col].dtype.kind == "O":
+                df[col] = df[col].apply(lambda x: x.strip() if isinstance(x, str) else x)
+        return df
+
+    product_route = _norm_product_route(product_route)
+    option_rules = _norm_option_rules(option_rules)
+    output_layout = _norm_output_layout(output_layout)
+
+    product_route = _strip_all_strings(product_route)
+    option_rules = _strip_all_strings(option_rules)
+    output_layout = _strip_all_strings(output_layout)
+
+    # Data Cleaning: Parameter string, ApplyTo Uppercase
+    if "Parameter" in option_rules.columns:
+        option_rules["Parameter"] = option_rules["Parameter"].astype(str)
+        option_rules["Parameter"] = option_rules["Parameter"].replace(["nan", "NaN", "None", "<NA>"], "")
+        option_rules["Parameter"] = option_rules["Parameter"].str.strip()
+    else:
+        option_rules["Parameter"] = ""
+    if "ApplyTo" in option_rules.columns:
+        option_rules["ApplyTo"] = option_rules["ApplyTo"].fillna("").astype(str).str.strip().str.upper()
+    else:
+        option_rules["ApplyTo"] = ""
+    if "TargetKeyword" in option_rules.columns:
+        option_rules["TargetKeyword"] = option_rules["TargetKeyword"].fillna("").astype(str).str.strip()
+    else:
+        option_rules["TargetKeyword"] = ""
+
+    _debug_option_renamed_headers = option_rules.columns.tolist()
+
+    for name, df in [("ProductRoute", product_route), ("OptionRules", option_rules), ("OutputLayout", output_layout)]:
+        if df.empty:
+            raise ValueError(f"설정 시트 '{name}'이 비어 있습니다.")
+
+    for col in ["Priority", "Keyword", "TargetVendorID"]:
+        if col not in product_route.columns:
+            raise ValueError(f"ProductRoute에 '{col}' 컬럼이 없습니다.")
+    product_route = product_route.sort_values("Priority", ascending=True).reset_index(drop=True)
+
+    for col in ["Order", "ApplyTo", "TargetKeyword", "ActionType"]:
+        if col not in option_rules.columns:
+            raise ValueError(f"OptionRules에 '{col}' 컬럼이 없습니다.")
+    if "Parameter" not in option_rules.columns:
+        option_rules["Parameter"] = ""
+    if "Description" not in option_rules.columns:
+        option_rules["Description"] = ""
+    option_rules = option_rules.sort_values("Order", ascending=True).reset_index(drop=True)
+
+    for col in ["VendorID", "FilePrefix", "ExcelCol", "HeaderName"]:
+        if col not in output_layout.columns:
+            raise ValueError(f"OutputLayout에 '{col}' 컬럼이 없습니다.")
+    if "SourceCol" not in output_layout.columns:
+        output_layout["SourceCol"] = ""
+    if "HardcodedValue" not in output_layout.columns:
+        output_layout["HardcodedValue"] = ""
+
+    return {
+        "ProductRoute": product_route,
+        "OptionRules": option_rules,
+        "OutputLayout": output_layout,
+        "_debug_OptionRules_raw_headers": _debug_option_raw_headers,
+        "_debug_OptionRules_renamed_headers": _debug_option_renamed_headers,
+    }
+
+
+def load_config(config_path="config.xlsx", password=None):
+    if password and str(password).strip():
+        return _load_config_impl(config_path, password=password)
+    try:
+        stat = Path(config_path).stat()
+        cache_key = f"{stat.st_mtime}_{stat.st_size}"
+        return _load_config_cached(config_path, cache_key)
+    except OSError:
+        return _load_config_impl(config_path, password=None)
+
+
+# ============== Load Order File ==============
+
+def _get_excel_bytes(uploaded_file, password=None):
+    raw = uploaded_file.read()
+    if not raw:
+        raise ValueError("파일 내용이 비어 있습니다.")
+    if not HAS_MSOFFCRYPTO:
+        return raw
+    bio = BytesIO(raw)
+    office_file = msoffcrypto.OfficeFile(bio)
+    if not office_file.is_encrypted():
+        return raw
+    if not (password and str(password).strip()):
+        raise ValueError("엑셀 파일이 암호화되어 있습니다. 비밀번호를 입력하세요.")
+    try:
+        office_file.load_key(password=str(password).strip())
+        decrypted = BytesIO()
+        office_file.decrypt(decrypted)
+        decrypted.seek(0)
+        return decrypted.getvalue()
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "invalidkey" in type(e).__name__.lower() or "password" in err_msg or "decrypt" in err_msg:
+            raise ValueError("비밀번호가 올바르지 않습니다.") from e
+        raise ValueError(f"암호 해제 실패: {e}") from e
+
+
+def load_excel(uploaded_file, password=None):
+    file_name = (uploaded_file.name or "").lower()
+    if not file_name.endswith(".xlsx"):
+        raise ValueError("엑셀 파일(.xlsx)이 아닙니다.")
+    raw_bytes = _get_excel_bytes(uploaded_file, password=password)
+    preview = pd.read_excel(BytesIO(raw_bytes), header=None, nrows=20)
+    header_idx = find_header_row(preview)
+    df = pd.read_excel(BytesIO(raw_bytes), header=header_idx)
+    _strip_columns(df)
+    ensure_quantity_column(df)
+    return df
+
+
+def read_csv_with_encoding(file):
+    encodings = ("utf-8-sig", "utf-8", "cp949", "euc-kr")
+    last_err = None
+    for enc in encodings:
+        try:
+            file.seek(0)
+            preview = pd.read_csv(file, encoding=enc, header=None, nrows=20)
+            file.seek(0)
+            header_idx = find_header_row(preview)
+            file.seek(0)
+            df = pd.read_csv(file, encoding=enc, header=header_idx)
+            _strip_columns(df)
+            ensure_quantity_column(df)
+            return df
+        except Exception as e:
+            last_err = e
+    raise ValueError(f"CSV 인코딩 판별 실패. {last_err}")
+
+
+# ============== Step B: Routing ==============
+
+def route_vendor(df, product_route):
+    product_route = product_route.sort_values("Priority", ascending=True).reset_index(drop=True)
+    name_col = "상품명" if "상품명" in df.columns else None
+    option_col = "옵션정보" if "옵션정보" in df.columns else None
+    if not name_col:
+        df = df.copy()
+        df["_VendorID"] = "Unclassified"
+        return df
+
+    def search_vendor(row):
+        name = str(row.get(name_col, "") or "")
+        option = str(row.get(option_col, "") or "") if option_col else ""
+        search_text = (name + " " + option).strip()
+        fallback_vendor = None
+        for _, r in product_route.iterrows():
+            keywords_raw = str(r.get("Keyword", "") or "").strip()
+            if not keywords_raw:
+                continue
+            keywords = [k.strip() for k in keywords_raw.split(",") if k.strip()]
+            for kw in keywords:
+                if str(kw).upper() == "DEFAULT":
+                    fallback_vendor = str(r.get("TargetVendorID", "") or "").strip()
+                    break
+                if kw in search_text:
+                    return str(r.get("TargetVendorID", "") or "").strip()
+        return fallback_vendor if fallback_vendor else "Unclassified"
+
+    df = df.copy()
+    df["_VendorID"] = df.apply(search_vendor, axis=1)
+    return df
+
+
+# ============== Step C: Option Rules (Logic Engine) ==============
+
+def _safe_int(x, default=1):
+    try:
+        v = int(x)
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _apply_remove_text(text, param):
+    if not param or not str(param).strip():
+        return text
+    keywords = [k.strip() for k in str(param).split(",") if k.strip()]
+    for kw in keywords:
+        text = str(text).replace(kw, "")
+    return text
+
+
+def _apply_remove_regex(text, param):
+    if not param or not str(param).strip():
+        return text
+    try:
+        return re.sub(str(param).strip(), "", str(text))
+    except re.error:
+        return text
+
+
+def _apply_mask_text(text, param):
+    if not param or not str(param).strip():
+        return text
+    t = str(text)
+    keywords = [k.strip() for k in str(param).split(",") if k.strip()]
+    for kw in keywords:
+        t = t.replace(kw, f"__MASK__{kw}__")
+    return t
+
+
+def _apply_unmask_text(text, param):
+    return re.sub(r"__MASK__(.+?)__", r"\1", str(text))
+
+
+def _apply_convert_weight_range_fix(text, qty, calculated_weight_ref):
+    """
+    One-Shot Safe: Find weight patterns. If range (e.g. 800g-1kg), take MAX only.
+    weight_kg = MaxValue_kg * RowQty. Remove weight text AND immediately append " {weight_kg}kg".
+    Caller must check _weight_calculated lock before invoking (prevents double count).
+    """
+    qty = _safe_int(qty, 1)
+    pattern = re.compile(r"(\d+(?:\.\d+)?)\s*(g|kg|G|KG)", re.IGNORECASE)
+    matches = list(pattern.finditer(str(text)))
+    if not matches:
+        return text
+    values_kg = []
+    for m in matches:
+        num = float(m.group(1))
+        u = (m.group(2) or "g").lower()
+        kg = num / 1000.0 if u == "g" else num
+        values_kg.append(kg)
+    max_kg = max(values_kg)
+    weight_kg = max_kg * qty
+    calculated_weight_ref[0] += weight_kg
+    cleaned = pattern.sub("", str(text)).strip()
+    ws = f"{int(weight_kg)}kg" if weight_kg == int(weight_kg) else f"{weight_kg:.1f}kg"
+    return (cleaned + " " + ws).strip()
+
+
+def _apply_calc_unit(text, param, qty):
+    """
+    Precision Mode: Find (\\d+)\\s*{Parameter}, replace with NewNum = FoundNum * RowQty, keep unit.
+    Example: "10마리" (Qty 3) -> "30마리".
+    """
+    qty = _safe_int(qty, 1)
+    unit = str(param).strip() if param else ""
+    if not unit:
+        return text
+    pattern = re.compile(r"(\d+)\s*" + re.escape(unit))
+    def repl(m):
+        n = int(m.group(1)) * qty
+        return f"{n}{unit}"
+    return pattern.sub(repl, str(text))
+
+
+def _apply_group_multiply(text, param, qty):
+    """
+    Auto-Format: If Parameter (e.g. "명란") exists in text, append " {Parameter} x{RowQty}".
+    Example: "백명란" (Qty 2) -> append " 명란 x2".
+    """
+    qty = _safe_int(qty, 1)
+    kw = str(param).strip() if param else ""
+    if not kw or kw not in str(text):
+        return text
+    return (str(text).strip() + f" {kw} x{qty}").strip()
+
+
+def _apply_append_suffix(text, param):
+    if not param:
+        return text
+    return (str(text).strip() + " " + str(param).strip()).strip()
+
+
+def _apply_append_qty_unit(text, param, qty):
+    """
+    Direct Append (Squid Logic): Ignore weight/content, append "Qty + Unit".
+    Example: Qty=3, Parameter="팩" -> Appends " 3팩". Result: "Squid 3팩".
+    """
+    qty = _safe_int(qty, 1)
+    unit = str(param).strip() if param else "개"
+    return (str(text).strip() + f" {qty}{unit}").strip()
+
+
+def _apply_format_qty_single_stamp(text, param, qty, is_formatted_ref):
+    """
+    Single Stamp: If not _is_formatted, append format (e.g. x{qty}개 or ({qty}팩)), set _is_formatted = True.
+    """
+    if is_formatted_ref[0]:
+        return text
+    qty = _safe_int(qty, 1)
+    if not param or not str(param).strip():
+        fmt = f" x{qty}개"
+    else:
+        fmt = str(param).strip().replace("{qty}", str(qty))
+        if "{qty}" not in str(param):
+            fmt = f" x{qty}개"
+    is_formatted_ref[0] = True
+    return (str(text).strip() + " " + fmt).strip()
+
+
+def _apply_replace_regex_sub(text, param):
+    """
+    REPLACE_REGEX_SUB: Split Parameter by '///' -> pattern, replacement.
+    Apply re.sub(pattern, replacement, text).
+    Example: '^.*Octopus.*$ /// (Steamed)' replaces matching line with '(Steamed)'.
+    """
+    if not param or not str(param).strip():
+        return text
+    s = str(param).strip()
+    if "///" in s:
+        parts = s.split("///", 1)
+        pattern, repl = parts[0].strip(), parts[1].strip()
+    elif "||" in s:
+        pattern, repl = s.split("||", 1)[0].strip(), s.split("||", 1)[1].strip()
+    else:
+        pattern, repl = s, ""
+    try:
+        return re.sub(pattern, repl, str(text))
+    except re.error:
+        return text
+
+
+def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵션정보", qty_col="수량", row_index=None, debug_log=None):
+    current_vendor = str(row.get("_VendorID", "") or "").strip().upper()
+    product = str(row.get(name_col, "") or "").strip()
+    raw_option = row.get(option_col, "")
+    if pd.isna(raw_option):
+        raw_option = ""
+    text = str(raw_option).strip()
+    qty = _safe_int(row.get(qty_col, 1), 1)
+    calculated_weight = 0.0
+    is_formatted = False
+    weight_calculated = False  # One-Shot Lock: prevents double CONVERT_WEIGHT application
+    calculated_weight_ref = [calculated_weight]
+    is_formatted_ref = [is_formatted]
+    weight_calculated_ref = [weight_calculated]
+    do_log = debug_log is not None and row_index is not None and row_index < 5
+
+    for rule_idx, (_, rule) in enumerate(option_rules.iterrows(), start=1):
+        rule_vendor = rule.get("ApplyTo", "") or ""
+        rule_target = rule.get("TargetKeyword", "") or ""
+        action = str(rule.get("ActionType", "") or "").strip().upper()
+        param = rule.get("Parameter", "") or ""
+
+        if rule_vendor != "ALL" and rule_vendor != current_vendor:
+            if do_log:
+                debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: {action}, Param: {repr(param)[:50]}) -> Matched? NO (ApplyTo)")
+            continue
+        if rule_target != "ALL" and rule_target not in product:
+            if do_log:
+                debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: {action}, Param: {repr(param)[:50]}) -> Matched? NO (TargetKeyword)")
+            continue
+
+        # CONVERT_WEIGHT One-Shot Lock: skip if already calculated for this row
+        if action == "CONVERT_WEIGHT":
+            if weight_calculated_ref[0]:
+                if do_log:
+                    debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: CONVERT_WEIGHT) -> SKIP (lock)")
+                continue
+            text = _apply_convert_weight_range_fix(text, qty, calculated_weight_ref)
+            weight_calculated_ref[0] = True
+        elif action == "REMOVE_TEXT":
+            text = _apply_remove_text(text, param)
+        elif action == "REMOVE_REGEX":
+            text = _apply_remove_regex(text, param)
+        elif action == "REPLACE_REGEX_SUB":
+            text = _apply_replace_regex_sub(text, param)
+        elif action == "MASK_TEXT":
+            text = _apply_mask_text(text, param)
+        elif action == "UNMASK_TEXT":
+            text = _apply_unmask_text(text, param)
+        elif action == "CALC_UNIT":
+            text = _apply_calc_unit(text, param, qty)
+        elif action == "GROUP_MULTIPLY":
+            text = _apply_group_multiply(text, param, qty)
+        elif action == "APPEND_QTY_UNIT":
+            text = _apply_append_qty_unit(text, param, qty)
+        elif action == "APPEND_SUFFIX":
+            text = _apply_append_suffix(text, param)
+        elif action == "FORMAT_QTY":
+            text = _apply_format_qty_single_stamp(text, param, qty, is_formatted_ref)
+
+        text = re.sub(r"\s+", " ", str(text)).strip()
+        if do_log:
+            debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: {action}, Param: {repr(param)[:50]}) -> Matched? YES -> Result: {repr(text)[:50]}")
+
+    final_weight = calculated_weight_ref[0]
+    final_formatted = is_formatted_ref[0]
+    if not text:
+        text = f" x{qty}개" if not final_formatted else " "
+        text = text.strip() or f"{qty}개"
+    return (text.strip(), final_weight, final_formatted)
+
+
+def run_option_engine(df, option_rules, debug_log=None):
+    name_col = "상품명" if "상품명" in df.columns else None
+    option_col = "옵션정보" if "옵션정보" in df.columns else None
+    qty_col = "수량" if "수량" in df.columns else None
+    if not name_col or not option_col:
+        df = df.copy()
+        df["processed_option"] = ""
+        df["_calculated_weight"] = 0.0
+        df["_is_formatted"] = False
+        df["_weight_calculated"] = False
+        return df
+    df = df.copy()
+    df["_calculated_weight"] = 0.0
+    df["_is_formatted"] = False
+    df["_weight_calculated"] = False  # One-Shot Lock (per-row, used in apply_option_rules)
+    opts = []
+    weights = []
+    formatted_flags = []
+    for i in range(len(df)):
+        row = df.iloc[i].copy()
+        r_text, r_weight, r_fmt = apply_option_rules(
+            row, option_rules, name_col, option_col, qty_col, row_index=i, debug_log=debug_log
+        )
+        opts.append(r_text)
+        weights.append(r_weight)
+        formatted_flags.append(r_fmt)
+    df["processed_option"] = opts
+    df["_calculated_weight"] = weights
+    df["_is_formatted"] = formatted_flags
+    return df
+
+
+# ============== Step D: Merge & Sort ==============
+
+def filter_instruction_rows(df):
+    if df.empty:
+        return df
+    mask = df.astype(str).apply(
+        lambda row: row.str.contains(FILTER_PHRASE, na=False).any(), axis=1
+    )
+    return df.loc[~mask].reset_index(drop=True)
+
+
+def _cleanup_empty_parens(s):
+    """Remove empty parentheses () or [] that might remain after removals."""
+    if pd.isna(s) or not str(s).strip():
+        return s
+    t = str(s)
+    t = re.sub(r"\(\s*\)", "", t)
+    t = re.sub(r"\[\s*\]", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def merge_orders(df, option_rules=None):
+    phone_col = DEFAULT_PHONE_COL if DEFAULT_PHONE_COL in df.columns else ALT_PHONE_COL
+    if phone_col not in df.columns:
+        raise ValueError("전화번호 컬럼 없음: 수취인연락처1 또는 구매자연락처 필요")
+    group_cols = ["수취인명", phone_col, "통합배송지", "_VendorID"]
+    for c in group_cols:
+        if c not in df.columns:
+            raise ValueError(f"병합 키 컬럼 없음: {c}")
+
+    def join_options(ser):
+        vals = ser.dropna().astype(str).str.strip()
+        return " / ".join(v for v in vals if v)
+
+    def join_unique_messages(ser):
+        parts = ser.dropna().astype(str).str.strip().unique().tolist()
+        return " / ".join(p for p in parts if p)
+
+    agg_dict = {
+        "processed_option": join_options,
+        "배송메세지": join_unique_messages,
+        "_calculated_weight": "sum",
+    }
+    if "구매자명" in df.columns:
+        agg_dict["구매자명"] = "first"
+    if "결제일" in df.columns:
+        agg_dict["결제일"] = "min"
+    for col in df.columns:
+        if col not in group_cols and col not in agg_dict:
+            agg_dict[col] = "first"
+
+    merged = df.groupby(group_cols, as_index=False).agg(agg_dict)
+
+    # Weight Handling (FIX): Do NOT append total sum at end. Weights already per-item in Step C.
+    merged["processed_option"] = merged["processed_option"].apply(_cleanup_empty_parens)
+    return merged
+
+
+def sort_by_payment_date(df):
+    if "결제일" not in df.columns or df.empty:
+        return df
+    df = df.copy()
+    s = pd.to_datetime(df["결제일"], errors="coerce")
+    df["_sort_date"] = s
+    df = df.sort_values("_sort_date", ascending=True, na_position="last").drop(columns=["_sort_date"])
+    return df.reset_index(drop=True)
+
+
+# ============== Step E: Export ==============
+
+def build_output_dataframe(merged_df, output_layout, vendor_id):
+    layout = output_layout[output_layout["VendorID"].astype(str).str.strip() == str(vendor_id).strip()]
+    if layout.empty:
+        return None
+    layout = layout.sort_values("ExcelCol").reset_index(drop=True)
+    row_count = len(merged_df)
+    out = {}
+    for _, r in layout.iterrows():
+        header = str(r["HeaderName"]).strip() if pd.notna(r["HeaderName"]) else ""
+        if not header:
+            continue
+        hc = r.get("HardcodedValue")
+        if pd.notna(hc) and str(hc).strip():
+            out[header] = [str(hc).strip()] * row_count
+        else:
+            src = r.get("SourceCol")
+            if pd.notna(src) and str(src).strip() and str(src).strip() in merged_df.columns:
+                out[header] = merged_df[str(src).strip()].values
+            else:
+                out[header] = [""] * row_count
+    if not out:
+        return None
+    return pd.DataFrame(out)
+
+
+def export_individual_files(merged_df, config):
+    """Generate one Excel file per vendor. Returns list of {vendor, data, filename} (no ZIP)."""
+    output_layout = config["OutputLayout"]
+    vendor_ids = merged_df["_VendorID"].dropna().astype(str).str.strip().unique()
+    vendor_ids = [v for v in vendor_ids if v and v != "Unclassified"]
+
+    date_str = datetime.now().strftime("%Y%m%d")
+    processed_files = []
+
+    for vid in vendor_ids:
+        subset = merged_df[merged_df["_VendorID"].astype(str).str.strip() == vid]
+        layout = config["OutputLayout"]
+        prefix_row = layout[layout["VendorID"].astype(str).str.strip() == vid]
+        file_prefix = ""
+        if not prefix_row.empty and "FilePrefix" in prefix_row.columns:
+            file_prefix = str(prefix_row["FilePrefix"].iloc[0]).strip() if pd.notna(prefix_row["FilePrefix"].iloc[0]) else ""
+        if file_prefix and str(file_prefix).lower().endswith(".xlsx"):
+            file_prefix = str(file_prefix)[:-5]
+        file_prefix = str(file_prefix).strip() if file_prefix else ""
+        filename = f"{file_prefix}_{date_str}.xlsx" if file_prefix else f"{vid}_{date_str}.xlsx"
+
+        out_df = build_output_dataframe(subset, layout, vid)
+        if out_df is None or out_df.empty:
+            out_df = subset.copy()
+        excel_buf = BytesIO()
+        with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
+            out_df.to_excel(writer, index=False, sheet_name="발주")
+        excel_buf.seek(0)
+
+        processed_files.append({
+            "vendor": vid,
+            "data": excel_buf,
+            "filename": filename,
+        })
+
+    return processed_files
+
+
+# ============== UI ==============
+
+def main():
+    st.set_page_config(page_title="속초 발주 처리 시스템 v13.8 (Complete)", layout="wide")
+    st.title("속초 발주 처리 시스템 v13.8 (Complete)")
+
+    st.write(
+        "설정 파일(config.xlsx) 기반 주문 처리: REPLACE_REGEX_SUB(///), Weight Lock, 개별 업체 다운로드."
+    )
+
+    if not HAS_MSOFFCRYPTO:
+        st.warning("비밀번호 보호 엑셀: `pip install msoffcrypto-tool`")
+
+    with st.sidebar:
+        st.subheader("🔍 데이터 정밀 검사 (Debug)")
+        show_debug = st.checkbox("Show Debug Info", value=True, key="show_debug_v138")
+
+    uploaded_file = st.file_uploader("주문 파일 (.xlsx 또는 .csv)", type=["xlsx", "csv"])
+    if uploaded_file is None:
+        st.info("주문 파일을 업로드하면 처리됩니다. (config.xlsx가 같은 폴더에 있어야 합니다)")
+        return
+
+    config_path = "config.xlsx"
+    config_password = st.text_input("설정 파일 비밀번호 (없으면 비움)", type="password", key="config_pw")
+    try:
+        config = load_config(config_path, password=config_password or None)
+    except FileNotFoundError as e:
+        st.error(str(e))
+        st.info("config.xlsx를 앱과 같은 폴더에 두거나, 경로를 수정하세요.")
+        return
+    except ValueError as e:
+        st.error(str(e))
+        return
+
+    if show_debug:
+        with st.sidebar:
+            st.write("**Raw Headers:**", config.get("_debug_OptionRules_raw_headers", []))
+            st.write("**Renamed Headers:**", config.get("_debug_OptionRules_renamed_headers", []))
+            st.dataframe(config["OptionRules"].head(10))
+
+    with st.expander("Debug Rules"):
+        st.write("OptionRules:", config["OptionRules"].head())
+        st.write("ProductRoute:", config["ProductRoute"].head())
+        st.write("OutputLayout:", config["OutputLayout"].head())
+
+    password = None
+    if (uploaded_file.name or "").lower().endswith(".xlsx"):
+        password = st.text_input("주문 엑셀 비밀번호 (없으면 비움)", type="password", key="order_pw")
+
+    file_name = (uploaded_file.name or "").lower()
+    try:
+        if file_name.endswith(".xlsx"):
+            df = load_excel(uploaded_file, password=password)
+        else:
+            uploaded_file.seek(0)
+            df = read_csv_with_encoding(uploaded_file)
+    except Exception as e:
+        st.error(str(e))
+        return
+
+    before = len(df)
+    df = filter_instruction_rows(df)
+    if before > len(df):
+        st.info(f"안내 문구 행 {before - len(df)}개 제거.")
+
+    if df.empty:
+        st.warning("처리할 데이터가 없습니다.")
+        return
+
+    st.subheader("Raw Data Preview (상위 5행)")
+    st.dataframe(df.head())
+
+    required = ["수량", "상품명", "옵션정보", "수취인명", "통합배송지", "배송메세지"]
+    phone_ok = DEFAULT_PHONE_COL in df.columns or ALT_PHONE_COL in df.columns
+    if not phone_ok:
+        st.error("필수 컬럼 누락: 수취인연락처1 또는 구매자연락처")
+        return
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        st.warning(f"필수 컬럼 누락 시 처리 오류 가능: {missing}")
+        if "상품명" not in df.columns or "옵션정보" not in df.columns or "수취인명" not in df.columns or "통합배송지" not in df.columns:
+            st.error("최소한 상품명, 옵션정보, 수취인명, 통합배송지가 필요합니다.")
+            return
+
+    if "구매자명" not in df.columns:
+        df["구매자명"] = ""
+
+    st.write("라우팅 중...")
+    df = route_vendor(df, config["ProductRoute"])
+
+    st.write("옵션 규칙 적용 중...")
+    debug_log = [] if show_debug else None
+    df = run_option_engine(df, config["OptionRules"], debug_log=debug_log)
+
+    if show_debug and debug_log:
+        with st.sidebar:
+            st.write("**Execution Log (first 5 rows):**")
+            for line in debug_log:
+                st.text(line)
+
+    st.write("동일 수취인·주소·업체 기준 병합 중...")
+    try:
+        merged = merge_orders(df, option_rules=config["OptionRules"])
+    except Exception as e:
+        st.error(str(e))
+        return
+
+    if "결제일" in merged.columns:
+        st.write("결제일 기준 오름차순 정렬 중...")
+        merged = sort_by_payment_date(merged)
+
+    st.subheader("Processed Data Preview (상위 5행)")
+    st.dataframe(merged.head())
+
+    try:
+        processed_files = export_individual_files(merged, config)
+    except Exception as e:
+        st.error(f"파일 생성 실패: {e}")
+        return
+
+    st.success(f"처리 완료. 총 {len(processed_files)}개 업체 파일을 다운로드하세요.")
+    for i, pf in enumerate(processed_files):
+        vendor_name = pf["vendor"]
+        data_bytes = pf["data"].getvalue()
+        filename = pf["filename"]
+        st.download_button(
+            label=f"📥 Download [{vendor_name}] File",
+            data=data_bytes,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"dl_{vendor_name}_{i}",
+        )
+
+
+if __name__ == "__main__":
+    main()
