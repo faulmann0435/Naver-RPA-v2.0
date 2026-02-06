@@ -1,9 +1,8 @@
 """
-Sokcho Order Processing System v13.8 (Complete)
-REPLACE_REGEX_SUB (///), Weight Lock, Individual Download.
-- config.xlsx: ProductRoute, OptionRules, OutputLayout (Korean headers normalized)
-- Password-protected Excel (msoffcrypto), CSV with encoding auto-detect
-- Route → Option Rules (_calculated_weight, _is_formatted) → Merge & Sort → Export
+Sokcho Order Processing System v14.3
+- Config: load_config_local(config.xlsx, password "1111") with @st.cache_data(ttl=3600)
+- List-based row updates (performance)
+- Session state for processed_results (no re-run on download click)
 """
 import re
 from datetime import datetime
@@ -50,17 +49,23 @@ def ensure_quantity_column(df):
     return df
 
 
-# ============== Config Loader ==============
+# ============== Config Loader (v14.3: load_config_local + cache) ==============
 
-@st.cache_data(ttl=60)
-def _load_config_cached(config_path: str, _raw_hash: str):
-    return _load_config_impl(config_path, password=None)
-
-
-def _load_config_impl(config_path: str, password=None):
-    path = Path(config_path)
+@st.cache_data(ttl=3600)
+def load_config_local(config_path: str, _password: str = None, _cache_key: str = None):
+    """
+    Load config.xlsx with password support. Uses msoffcrypto if encrypted.
+    Returns: dict with keys ['ProductRoute', 'OptionRules', 'OutputLayout']
+    _cache_key: pass file mtime/size to invalidate cache when file changes.
+    """
+    path = Path(config_path).resolve()
     if not path.exists():
-        raise FileNotFoundError(f"설정 파일을 찾을 수 없습니다: {config_path}")
+        raise FileNotFoundError(
+            f"설정 파일을 찾을 수 없습니다. 경로: {path!s}\n"
+            "config.xlsx를 앱과 같은 폴더에 두거나 경로를 확인하세요."
+        )
+    password = _password if _password and str(_password).strip() else None
+    # _cache_key used only for cache invalidation (not for decryption)
 
     raw = path.read_bytes()
     if HAS_MSOFFCRYPTO:
@@ -207,17 +212,6 @@ def _load_config_impl(config_path: str, password=None):
         "_debug_OptionRules_raw_headers": _debug_option_raw_headers,
         "_debug_OptionRules_renamed_headers": _debug_option_renamed_headers,
     }
-
-
-def load_config(config_path="config.xlsx", password=None):
-    if password and str(password).strip():
-        return _load_config_impl(config_path, password=password)
-    try:
-        stat = Path(config_path).stat()
-        cache_key = f"{stat.st_mtime}_{stat.st_size}"
-        return _load_config_cached(config_path, cache_key)
-    except OSError:
-        return _load_config_impl(config_path, password=None)
 
 
 # ============== Load Order File ==============
@@ -550,6 +544,7 @@ def run_option_engine(df, option_rules, debug_log=None):
     df["_calculated_weight"] = 0.0
     df["_is_formatted"] = False
     df["_weight_calculated"] = False  # One-Shot Lock (per-row, used in apply_option_rules)
+    # List-collection pattern (v14.1): collect in lists then assign once (faster than df.at[i] per row)
     opts = []
     weights = []
     formatted_flags = []
@@ -701,55 +696,95 @@ def export_individual_files(merged_df, config):
     return processed_files
 
 
-# ============== UI ==============
+def process_all_data(df, config):
+    """
+    Full pipeline: filter -> route -> option rules (list-based) -> merge -> sort -> export.
+    Returns list of dicts: [{'vendor': name, 'data': BytesIO, 'filename': str}, ...]
+    """
+    product_route = config["ProductRoute"]
+    option_rules = config["OptionRules"]
+    df = filter_instruction_rows(df)
+    if df.empty:
+        return []
+    if "구매자명" not in df.columns:
+        df = df.copy()
+        df["구매자명"] = ""
+    df = route_vendor(df, product_route)
+    df = run_option_engine(df, option_rules, debug_log=None)
+    merged = merge_orders(df, option_rules=option_rules)
+    if "결제일" in merged.columns:
+        merged = sort_by_payment_date(merged)
+    return export_individual_files(merged, config)
+
+
+# ============== UI (v14.3: Session State) ==============
 
 def main():
-    st.set_page_config(page_title="속초 발주 처리 시스템 v13.8 (Complete)", layout="wide")
-    st.title("속초 발주 처리 시스템 v13.8 (Complete)")
+    st.set_page_config(page_title="속초 발주 처리 시스템 v14.3", layout="wide")
+    st.title("속초 발주 처리 시스템 v14.3")
 
-    st.write(
-        "설정 파일(config.xlsx) 기반 주문 처리: REPLACE_REGEX_SUB(///), Weight Lock, 개별 업체 다운로드."
-    )
+    # Session state: persist processed results so download buttons do NOT trigger re-run
+    if "processed_results" not in st.session_state:
+        st.session_state.processed_results = None
+    if "last_file_id" not in st.session_state:
+        st.session_state.last_file_id = None
+
+    st.write("설정: config.xlsx (로컬). 주문 파일 업로드 후 Process 버튼을 클릭하세요.")
 
     if not HAS_MSOFFCRYPTO:
         st.warning("비밀번호 보호 엑셀: `pip install msoffcrypto-tool`")
 
-    with st.sidebar:
-        st.subheader("🔍 데이터 정밀 검사 (Debug)")
-        show_debug = st.checkbox("Show Debug Info", value=True, key="show_debug_v138")
-
-    uploaded_file = st.file_uploader("주문 파일 (.xlsx 또는 .csv)", type=["xlsx", "csv"])
-    if uploaded_file is None:
-        st.info("주문 파일을 업로드하면 처리됩니다. (config.xlsx가 같은 폴더에 있어야 합니다)")
-        return
-
     config_path = "config.xlsx"
-    config_password = st.text_input("설정 파일 비밀번호 (없으면 비움)", type="password", key="config_pw")
     try:
-        config = load_config(config_path, password=config_password or None)
+        path = Path(config_path).resolve()
+        if not path.exists():
+            st.error(f"설정 파일을 찾을 수 없습니다. 경로: {path!s}")
+            st.info("config.xlsx를 앱과 같은 폴더에 두거나 경로를 확인하세요.")
+            return
+        cache_key = f"{path.stat().st_mtime}_{path.stat().st_size}"
+        config = load_config_local(config_path, _password="1111", _cache_key=cache_key)
     except FileNotFoundError as e:
         st.error(str(e))
-        st.info("config.xlsx를 앱과 같은 폴더에 두거나, 경로를 수정하세요.")
         return
     except ValueError as e:
         st.error(str(e))
         return
 
-    if show_debug:
-        with st.sidebar:
-            st.write("**Raw Headers:**", config.get("_debug_OptionRules_raw_headers", []))
-            st.write("**Renamed Headers:**", config.get("_debug_OptionRules_renamed_headers", []))
-            st.dataframe(config["OptionRules"].head(10))
+    with st.sidebar:
+        st.subheader("Config")
+        st.caption("Config loaded from config.xlsx")
 
-    with st.expander("Debug Rules"):
-        st.write("OptionRules:", config["OptionRules"].head())
-        st.write("ProductRoute:", config["ProductRoute"].head())
-        st.write("OutputLayout:", config["OutputLayout"].head())
+    uploaded_file = st.file_uploader("주문 파일 (.xlsx 또는 .csv)", type=["xlsx", "csv"], key="uploaded_file")
 
+    # When a new order file is uploaded (different name/size), reset processed_results
+    if uploaded_file is not None:
+        file_id = (uploaded_file.name, uploaded_file.size)
+        if st.session_state.last_file_id != file_id:
+            st.session_state.processed_results = None
+            st.session_state.last_file_id = file_id
+
+    # No file and no cached results -> ask to upload
+    if uploaded_file is None and st.session_state.processed_results is None:
+        st.info("주문 파일을 업로드한 뒤 'Process Orders' 버튼을 클릭하세요.")
+        return
+
+    # No file but we have results (e.g. after download click rerun) -> show download only
+    if uploaded_file is None and st.session_state.processed_results is not None:
+        st.success(f"처리 완료. 총 {len(st.session_state.processed_results)}개 업체 파일을 다운로드하세요.")
+        for i, pf in enumerate(st.session_state.processed_results):
+            st.download_button(
+                label=f"📥 Download [{pf['vendor']}] File",
+                data=pf["data"].getvalue(),
+                file_name=pf["filename"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dl_{pf['vendor']}_{i}",
+            )
+        return
+
+    # File uploaded: load and validate
     password = None
     if (uploaded_file.name or "").lower().endswith(".xlsx"):
         password = st.text_input("주문 엑셀 비밀번호 (없으면 비움)", type="password", key="order_pw")
-
     file_name = (uploaded_file.name or "").lower()
     try:
         if file_name.endswith(".xlsx"):
@@ -765,13 +800,9 @@ def main():
     df = filter_instruction_rows(df)
     if before > len(df):
         st.info(f"안내 문구 행 {before - len(df)}개 제거.")
-
     if df.empty:
         st.warning("처리할 데이터가 없습니다.")
         return
-
-    st.subheader("Raw Data Preview (상위 5행)")
-    st.dataframe(df.head())
 
     required = ["수량", "상품명", "옵션정보", "수취인명", "통합배송지", "배송메세지"]
     phone_ok = DEFAULT_PHONE_COL in df.columns or ALT_PHONE_COL in df.columns
@@ -779,60 +810,38 @@ def main():
         st.error("필수 컬럼 누락: 수취인연락처1 또는 구매자연락처")
         return
     missing = [c for c in required if c not in df.columns]
-    if missing:
-        st.warning(f"필수 컬럼 누락 시 처리 오류 가능: {missing}")
-        if "상품명" not in df.columns or "옵션정보" not in df.columns or "수취인명" not in df.columns or "통합배송지" not in df.columns:
-            st.error("최소한 상품명, 옵션정보, 수취인명, 통합배송지가 필요합니다.")
-            return
-
-    if "구매자명" not in df.columns:
-        df["구매자명"] = ""
-
-    st.write("라우팅 중...")
-    df = route_vendor(df, config["ProductRoute"])
-
-    st.write("옵션 규칙 적용 중...")
-    debug_log = [] if show_debug else None
-    df = run_option_engine(df, config["OptionRules"], debug_log=debug_log)
-
-    if show_debug and debug_log:
-        with st.sidebar:
-            st.write("**Execution Log (first 5 rows):**")
-            for line in debug_log:
-                st.text(line)
-
-    st.write("동일 수취인·주소·업체 기준 병합 중...")
-    try:
-        merged = merge_orders(df, option_rules=config["OptionRules"])
-    except Exception as e:
-        st.error(str(e))
+    if missing and ("상품명" not in df.columns or "옵션정보" not in df.columns or "수취인명" not in df.columns or "통합배송지" not in df.columns):
+        st.error("최소한 상품명, 옵션정보, 수취인명, 통합배송지가 필요합니다.")
         return
 
-    if "결제일" in merged.columns:
-        st.write("결제일 기준 오름차순 정렬 중...")
-        merged = sort_by_payment_date(merged)
+    st.subheader("Raw Data Preview (상위 5행)")
+    st.dataframe(df.head())
 
-    st.subheader("Processed Data Preview (상위 5행)")
-    st.dataframe(merged.head())
+    # Process button: run pipeline and store in session state
+    if st.button("Process Orders"):
+        with st.spinner("Processing..."):
+            try:
+                result = process_all_data(df, config)
+                st.session_state.processed_results = result
+                st.session_state.last_file_id = (uploaded_file.name, uploaded_file.size)
+            except Exception as e:
+                st.error(f"처리 실패: {e}")
+                return
+        st.rerun()
 
-    try:
-        processed_files = export_individual_files(merged, config)
-    except Exception as e:
-        st.error(f"파일 생성 실패: {e}")
-        return
-
-    st.success(f"처리 완료. 총 {len(processed_files)}개 업체 파일을 다운로드하세요.")
-    for i, pf in enumerate(processed_files):
-        vendor_name = pf["vendor"]
-        data_bytes = pf["data"].getvalue()
-        filename = pf["filename"]
-        st.download_button(
-            label=f"📥 Download [{vendor_name}] File",
-            data=data_bytes,
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"dl_{vendor_name}_{i}",
-        )
+    # If we already have results for this session, show download section
+    if st.session_state.processed_results is not None:
+        st.success(f"처리 완료. 총 {len(st.session_state.processed_results)}개 업체 파일을 다운로드하세요.")
+        for i, pf in enumerate(st.session_state.processed_results):
+            st.download_button(
+                label=f"📥 Download [{pf['vendor']}] File",
+                data=pf["data"].getvalue(),
+                file_name=pf["filename"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"dl_{pf['vendor']}_{i}",
+            )
+    else:
+        st.caption("위 'Process Orders' 버튼을 클릭하면 처리 후 다운로드 버튼이 표시됩니다.")
 
 
 if __name__ == "__main__":
