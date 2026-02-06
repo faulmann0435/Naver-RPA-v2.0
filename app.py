@@ -1,8 +1,8 @@
 """
-Sokcho Order Processing System v14.3
-- Config: load_config_local(config.xlsx, password "1111") with @st.cache_data(ttl=3600)
-- List-based row updates (performance)
-- Session state for processed_results (no re-run on download click)
+Sokcho Order Processing System v14.4
+- Quantity Display Lock: prevents double quantity stamping (e.g., "x2 x2")
+- GROUP_MULTIPLY: append (x{Qty}) only, no param word repeat
+- Config: load_config_local, List-based, Session State
 """
 import re
 from datetime import datetime
@@ -392,20 +392,27 @@ def _apply_calc_unit(text, param, qty):
 
 def _apply_group_multiply(text, param, qty):
     """
-    Auto-Format: If Parameter (e.g. "명란") exists in text, append " {Parameter} x{RowQty}".
-    Example: "백명란" (Qty 2) -> append " 명란 x2".
+    If Parameter exists in text, append ONLY (x{RowQty}). Do NOT repeat param word.
+    Example: "백명란" (Qty 2) -> "백명란 (x2)". Avoids "Source Source x3".
     """
     qty = _safe_int(qty, 1)
     kw = str(param).strip() if param else ""
     if not kw or kw not in str(text):
         return text
-    return (str(text).strip() + f" {kw} x{qty}").strip()
+    return (str(text).strip() + f" (x{qty})").strip()
 
 
 def _apply_append_suffix(text, param):
     if not param:
         return text
     return (str(text).strip() + " " + str(param).strip()).strip()
+
+
+def _apply_prepend_text(text, param):
+    """Prepend Parameter to text. Always apply (no lock)."""
+    if not param or not str(param).strip():
+        return text
+    return (str(param).strip() + " " + str(text).strip()).strip()
 
 
 def _apply_append_qty_unit(text, param, qty):
@@ -418,11 +425,11 @@ def _apply_append_qty_unit(text, param, qty):
     return (str(text).strip() + f" {qty}{unit}").strip()
 
 
-def _apply_format_qty_single_stamp(text, param, qty, is_formatted_ref):
+def _apply_format_qty_single_stamp(text, param, qty, qty_display_lock_ref):
     """
-    Single Stamp: If not _is_formatted, append format (e.g. x{qty}개 or ({qty}팩)), set _is_formatted = True.
+    Single Stamp: If not qty_display_lock, append format (e.g. x{qty}개), set lock = True.
     """
-    if is_formatted_ref[0]:
+    if qty_display_lock_ref[0]:
         return text
     qty = _safe_int(qty, 1)
     if not param or not str(param).strip():
@@ -431,7 +438,7 @@ def _apply_format_qty_single_stamp(text, param, qty, is_formatted_ref):
         fmt = str(param).strip().replace("{qty}", str(qty))
         if "{qty}" not in str(param):
             fmt = f" x{qty}개"
-    is_formatted_ref[0] = True
+    qty_display_lock_ref[0] = True
     return (str(text).strip() + " " + fmt).strip()
 
 
@@ -466,11 +473,11 @@ def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵�
     text = str(raw_option).strip()
     qty = _safe_int(row.get(qty_col, 1), 1)
     calculated_weight = 0.0
-    is_formatted = False
     weight_calculated = False  # One-Shot Lock: prevents double CONVERT_WEIGHT application
+    qty_display_lock = False   # v14.4: prevents double quantity suffix (x2 x2)
     calculated_weight_ref = [calculated_weight]
-    is_formatted_ref = [is_formatted]
     weight_calculated_ref = [weight_calculated]
+    qty_display_lock_ref = [qty_display_lock]
     do_log = debug_log is not None and row_index is not None and row_index < 5
 
     for rule_idx, (_, rule) in enumerate(option_rules.iterrows(), start=1):
@@ -508,21 +515,37 @@ def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵�
             text = _apply_unmask_text(text, param)
         elif action == "CALC_UNIT":
             text = _apply_calc_unit(text, param, qty)
-        elif action == "GROUP_MULTIPLY":
-            text = _apply_group_multiply(text, param, qty)
         elif action == "APPEND_QTY_UNIT":
+            if qty_display_lock_ref[0]:
+                if do_log:
+                    debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: APPEND_QTY_UNIT) -> SKIP (qty_display_lock)")
+                continue
             text = _apply_append_qty_unit(text, param, qty)
+            qty_display_lock_ref[0] = True
+        elif action == "GROUP_MULTIPLY":
+            if qty_display_lock_ref[0]:
+                if do_log:
+                    debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: GROUP_MULTIPLY) -> SKIP (qty_display_lock)")
+                continue
+            text = _apply_group_multiply(text, param, qty)
+            qty_display_lock_ref[0] = True
         elif action == "APPEND_SUFFIX":
             text = _apply_append_suffix(text, param)
+        elif action == "PREPEND_TEXT":
+            text = _apply_prepend_text(text, param)
         elif action == "FORMAT_QTY":
-            text = _apply_format_qty_single_stamp(text, param, qty, is_formatted_ref)
+            if qty_display_lock_ref[0]:
+                if do_log:
+                    debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: FORMAT_QTY) -> SKIP (qty_display_lock)")
+                continue
+            text = _apply_format_qty_single_stamp(text, param, qty, qty_display_lock_ref)
 
         text = re.sub(r"\s+", " ", str(text)).strip()
         if do_log:
             debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: {action}, Param: {repr(param)[:50]}) -> Matched? YES -> Result: {repr(text)[:50]}")
 
     final_weight = calculated_weight_ref[0]
-    final_formatted = is_formatted_ref[0]
+    final_formatted = qty_display_lock_ref[0]  # True if any qty stamp was applied
     if not text:
         text = f" x{qty}개" if not final_formatted else " "
         text = text.strip() or f"{qty}개"
@@ -720,8 +743,8 @@ def process_all_data(df, config):
 # ============== UI (v14.3: Session State) ==============
 
 def main():
-    st.set_page_config(page_title="속초 발주 처리 시스템 v14.3", layout="wide")
-    st.title("속초 발주 처리 시스템 v14.3")
+    st.set_page_config(page_title="속초 발주 처리 시스템 v14.4", layout="wide")
+    st.title("속초 발주 처리 시스템 v14.4")
 
     # Session state: persist processed results so download buttons do NOT trigger re-run
     if "processed_results" not in st.session_state:
