@@ -390,14 +390,18 @@ def _apply_calc_unit(text, param, qty):
     return pattern.sub(repl, str(text))
 
 
-def _apply_group_multiply(text, param, qty):
+def _apply_group_multiply(text, param, qty, search_in=None):
     """
-    If Parameter exists in text, append ONLY (x{RowQty}). Do NOT repeat param word.
-    Example: "백명란" (Qty 2) -> "백명란 (x2)". Avoids "Source Source x3".
+    If Parameter exists in search_in (or text if search_in not provided), append (x{RowQty}) to text only.
+    search_in: optional string to check for param (e.g. product+option); when set, append is still applied to text.
+    Example: text="1팩", search_in="Squid 1팩", param="Squid" -> "1팩 (x2)".
     """
     qty = _safe_int(qty, 1)
     kw = str(param).strip() if param else ""
-    if not kw or kw not in str(text):
+    if not kw:
+        return text
+    check_against = str(search_in).strip() if search_in is not None else str(text)
+    if kw not in check_against:
         return text
     return (str(text).strip() + f" (x{qty})").strip()
 
@@ -470,7 +474,9 @@ def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵�
     raw_option = row.get(option_col, "")
     if pd.isna(raw_option):
         raw_option = ""
+    # text = option only (modify target); full_context = product + option (for keyword search only)
     text = str(raw_option).strip()
+    full_context = f"{product} {text}".strip()
     qty = _safe_int(row.get(qty_col, 1), 1)
     calculated_weight = 0.0
     weight_calculated = False  # One-Shot Lock: prevents double CONVERT_WEIGHT application
@@ -490,7 +496,7 @@ def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵�
             if do_log:
                 debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: {action}, Param: {repr(param)[:50]}) -> Matched? NO (ApplyTo)")
             continue
-        if rule_target != "ALL" and rule_target not in product:
+        if rule_target != "ALL" and rule_target not in full_context:
             if do_log:
                 debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: {action}, Param: {repr(param)[:50]}) -> Matched? NO (TargetKeyword)")
             continue
@@ -527,7 +533,8 @@ def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵�
                 if do_log:
                     debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: GROUP_MULTIPLY) -> SKIP (qty_display_lock)")
                 continue
-            text = _apply_group_multiply(text, param, qty)
+            # Trigger if param in full_context; append (xQty) to text (option only)
+            text = _apply_group_multiply(text, param, qty, search_in=full_context)
             qty_display_lock_ref[0] = True
         elif action == "APPEND_SUFFIX":
             text = _apply_append_suffix(text, param)
@@ -553,16 +560,16 @@ def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵�
 
 
 def run_option_engine(df, option_rules, debug_log=None):
-    name_col = "상품명" if "상품명" in df.columns else None
-    option_col = "옵션정보" if "옵션정보" in df.columns else None
-    qty_col = "수량" if "수량" in df.columns else None
-    if not name_col or not option_col:
-        df = df.copy()
-        df["processed_option"] = ""
-        df["_calculated_weight"] = 0.0
-        df["_is_formatted"] = False
-        df["_weight_calculated"] = False
-        return df
+    # Column detection: Korean first, fallback to English (e.g. renamed headers)
+    name_col = "상품명" if "상품명" in df.columns else ("Product Name" if "Product Name" in df.columns else None)
+    option_col = "옵션정보" if "옵션정보" in df.columns else ("Option" if "Option" in df.columns else None)
+    qty_col = "수량" if "수량" in df.columns else ("Qty" if "Qty" in df.columns else None)
+    if not name_col:
+        raise ValueError("상품명 또는 'Product Name' 컬럼이 없습니다. 데이터에 제품명 컬럼을 추가하세요.")
+    if not option_col:
+        raise ValueError("옵션정보 또는 'Option' 컬럼이 없습니다. 데이터에 옵션 컬럼을 추가하세요.")
+    if not qty_col:
+        raise ValueError("수량 또는 'Qty' 컬럼이 없습니다. 데이터에 수량 컬럼을 추가하세요.")
     df = df.copy()
     df["_calculated_weight"] = 0.0
     df["_is_formatted"] = False
