@@ -357,7 +357,8 @@ def _apply_unmask_text(text, param):
 def _apply_convert_weight_range_fix(text, qty, calculated_weight_ref):
     """
     One-Shot Safe: Find weight patterns. If range (e.g. 800g-1kg), take MAX only.
-    weight_kg = MaxValue_kg * RowQty. Remove weight text AND immediately append " {weight_kg}kg".
+    weight_kg = MaxValue_kg * RowQty. Update calculated_weight_ref; remove weight text from string.
+    Do NOT append weight to text; merge_orders will append the total once.
     Caller must check _weight_calculated lock before invoking (prevents double count).
     """
     qty = _safe_int(qty, 1)
@@ -375,8 +376,7 @@ def _apply_convert_weight_range_fix(text, qty, calculated_weight_ref):
     weight_kg = max_kg * qty
     calculated_weight_ref[0] += weight_kg
     cleaned = pattern.sub("", str(text)).strip()
-    ws = f"{int(weight_kg)}kg" if weight_kg == int(weight_kg) else f"{weight_kg:.1f}kg"
-    return (cleaned + " " + ws).strip()
+    return cleaned
 
 
 def _apply_calc_unit(text, param, qty):
@@ -628,30 +628,68 @@ def merge_orders(df, option_rules=None):
         if c not in df.columns:
             raise ValueError(f"병합 키 컬럼 없음: {c}")
 
-    def join_options(ser):
-        vals = ser.dropna().astype(str).str.strip()
-        return " / ".join(v for v in vals if v)
-
     def join_unique_messages(ser):
         parts = ser.dropna().astype(str).str.strip().unique().tolist()
         return " / ".join(p for p in parts if p)
 
-    agg_dict = {
-        "processed_option": join_options,
-        "배송메세지": join_unique_messages,
-        "_calculated_weight": "sum",
-    }
-    if "구매자명" in df.columns:
-        agg_dict["구매자명"] = "first"
-    if "결제일" in df.columns:
-        agg_dict["결제일"] = "min"
-    for col in df.columns:
-        if col not in group_cols and col not in agg_dict:
-            agg_dict[col] = "first"
+    def _format_weight(total_weight):
+        if total_weight == int(total_weight):
+            return f"{int(total_weight)}kg"
+        return f"{total_weight}kg"
 
-    merged = df.groupby(group_cols, as_index=False).agg(agg_dict)
+    def _dedup_preserve_order(items):
+        return list(dict.fromkeys(x for x in items if x))
 
-    # Weight Handling (FIX): Do NOT append total sum at end. Weights already per-item in Step C.
+    def process_group(gdf):
+        has_weight_col = "_calculated_weight" in gdf.columns
+        weight_vals = gdf["_calculated_weight"].fillna(0) if has_weight_col else pd.Series(0.0, index=gdf.index)
+        weight_mask = weight_vals > 0
+
+        if has_weight_col and weight_mask.any():
+            total_weight = weight_vals.loc[weight_mask].sum()
+            weight_opts = _dedup_preserve_order(
+                gdf.loc[weight_mask, "processed_option"].dropna().astype(str).str.strip()
+            )
+            normal_opts = _dedup_preserve_order(
+                gdf.loc[~weight_mask, "processed_option"].dropna().astype(str).str.strip()
+            )
+        else:
+            total_weight = 0.0
+            weight_opts = []
+            normal_opts = _dedup_preserve_order(
+                gdf["processed_option"].dropna().astype(str).str.strip()
+            )
+
+        if weight_opts:
+            weight_str = " / ".join(weight_opts) + " " + _format_weight(total_weight)
+        else:
+            weight_str = ""
+        normal_str = " / ".join(normal_opts) if normal_opts else ""
+        if weight_str and normal_str:
+            processed_option = weight_str + " / " + normal_str
+        else:
+            processed_option = weight_str or normal_str
+
+        out = {}
+        for col in gdf.columns:
+            if col in group_cols:
+                out[col] = gdf[col].iloc[0]
+            elif col == "processed_option":
+                out[col] = processed_option
+            elif col == "_calculated_weight":
+                out[col] = total_weight if has_weight_col else 0.0
+            elif col == "배송메세지":
+                out[col] = join_unique_messages(gdf[col])
+            elif col == "결제일":
+                out[col] = gdf[col].min()
+            elif col == "구매자명":
+                out[col] = gdf[col].iloc[0]
+            else:
+                out[col] = gdf[col].iloc[0]
+
+        return pd.Series(out)
+
+    merged = df.groupby(group_cols, as_index=False).apply(process_group, include_groups=False)
     merged["processed_option"] = merged["processed_option"].apply(_cleanup_empty_parens)
     return merged
 
