@@ -18,6 +18,11 @@ try:
 except ImportError:
     HAS_MSOFFCRYPTO = False
 
+try:
+    from xlsxwriter.utility import xl_col_to_name
+except ImportError:
+    xl_col_to_name = None
+
 # --- Column names (order data) ---
 HEADER_KEYWORDS = ["상품명", "수취인명", "옵션정보"]
 FILTER_PHRASE = "다운로드 받은 파일로 '엑셀 일괄발송' 처리하는 방법"
@@ -688,6 +693,38 @@ def build_output_dataframe(merged_df, output_layout, vendor_id):
     return pd.DataFrame(out)
 
 
+# Keywords for address-related columns (for conditional formatting "제주" highlight)
+_ADDRESS_COLUMN_KEYWORDS = ("주소", "배송지", "address")
+
+
+def _apply_jeju_highlight(writer, out_df, sheet_name="발주"):
+    """Apply conditional format: light/dark red for cells containing '제주' in address-related columns only."""
+    workbook = writer.book
+    worksheet = writer.sheets.get(sheet_name)
+    if worksheet is None:
+        return
+    jeju_fmt = workbook.add_format({"bg_color": "#FFC7CE", "font_color": "#9C0006"})
+    nrows = len(out_df) + 1  # +1 for header; data rows 2..nrows
+    for col_idx, col_name in enumerate(out_df.columns):
+        name_str = str(col_name).strip()
+        if not name_str:
+            continue
+        is_address_col = any(
+            (kw in name_str) if kw != "address" else (kw in name_str.lower())
+            for kw in _ADDRESS_COLUMN_KEYWORDS
+        )
+        if not is_address_col:
+            continue
+        col_letter = xl_col_to_name(col_idx)
+        cell_range = f"{col_letter}2:{col_letter}{nrows}"
+        worksheet.conditional_format(cell_range, {
+            "type": "text",
+            "criteria": "containing",
+            "value": "제주",
+            "format": jeju_fmt,
+        })
+
+
 def export_individual_files(merged_df, config):
     """Generate one Excel file per vendor. Returns list of {vendor, data, filename} (no ZIP)."""
     output_layout = config["OutputLayout"]
@@ -715,6 +752,9 @@ def export_individual_files(merged_df, config):
         excel_buf = BytesIO()
         with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
             out_df.to_excel(writer, index=False, sheet_name="발주")
+            # Conditional format: highlight "제주" only in address-related columns
+            if xl_col_to_name and not out_df.empty:
+                _apply_jeju_highlight(writer, out_df, sheet_name="발주")
         excel_buf.seek(0)
 
         processed_files.append({
