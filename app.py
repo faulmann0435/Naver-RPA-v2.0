@@ -383,15 +383,21 @@ def _apply_calc_unit(text, param, qty):
     """
     Precision Mode: Find (\\d+)\\s*{Parameter}, replace with NewNum = FoundNum * RowQty, keep unit.
     Example: "10마리" (Qty 3) -> "30마리".
+    Numbers in a range (prefix - or ~) or approximation (suffix 내외/내외)) are left unchanged.
     """
     qty = _safe_int(qty, 1)
     unit = str(param).strip() if param else ""
     if not unit:
         return text
-    pattern = re.compile(r"(\d+)\s*" + re.escape(unit))
+    pattern = re.compile(r"([-~]\s*)?(\d+)\s*" + re.escape(unit) + r"(\s*내외\)?)?")
     def repl(m):
-        n = int(m.group(1)) * qty
-        return f"{n}{unit}"
+        prefix = m.group(1) or ""
+        num_str = m.group(2)
+        suffix = m.group(3) or ""
+        if "-" in prefix or "~" in prefix or "내외" in suffix:
+            return m.group(0)
+        n = int(num_str) * qty
+        return f"{prefix}{n}{unit}{suffix}"
     return pattern.sub(repl, str(text))
 
 
@@ -643,32 +649,29 @@ def merge_orders(df, option_rules=None):
     def process_group(gdf):
         has_weight_col = "_calculated_weight" in gdf.columns
         weight_vals = gdf["_calculated_weight"].fillna(0) if has_weight_col else pd.Series(0.0, index=gdf.index)
-        weight_mask = weight_vals > 0
 
-        if has_weight_col and weight_mask.any():
-            total_weight = weight_vals.loc[weight_mask].sum()
-            weight_opts = _dedup_preserve_order(
-                gdf.loc[weight_mask, "processed_option"].dropna().astype(str).str.strip()
-            )
-            normal_opts = _dedup_preserve_order(
-                gdf.loc[~weight_mask, "processed_option"].dropna().astype(str).str.strip()
-            )
-        else:
-            total_weight = 0.0
-            weight_opts = []
-            normal_opts = _dedup_preserve_order(
-                gdf["processed_option"].dropna().astype(str).str.strip()
-            )
+        weight_dict = {}  # unique_option_name -> total_weight (insertion order preserved)
+        normal_opts = []  # options with no weight, deduplicated in order
 
-        if weight_opts:
-            weight_str = " / ".join(weight_opts) + " " + _format_weight(total_weight)
-        else:
-            weight_str = ""
+        for idx, row in gdf.iterrows():
+            w = float(weight_vals.loc[idx]) if has_weight_col else 0.0
+            opt = row.get("processed_option")
+            processed_option = "" if (opt is None or (isinstance(opt, float) and pd.isna(opt))) else str(opt).strip()
+            if w > 0:
+                weight_dict[processed_option] = weight_dict.get(processed_option, 0) + w
+            else:
+                if processed_option and processed_option not in normal_opts:
+                    normal_opts.append(processed_option)
+
+        formatted_weight_strings = [f"{name} {_format_weight(t)}" for name, t in weight_dict.items()]
+        weight_str = " / ".join(formatted_weight_strings) if formatted_weight_strings else ""
         normal_str = " / ".join(normal_opts) if normal_opts else ""
         if weight_str and normal_str:
             processed_option = weight_str + " / " + normal_str
         else:
             processed_option = weight_str or normal_str
+
+        total_weight = sum(weight_dict.values()) if has_weight_col else 0.0
 
         out = {}
         for col in gdf.columns:
