@@ -626,10 +626,11 @@ def _cleanup_empty_parens(s):
 
 
 def merge_orders(df, option_rules=None):
-    phone_col = DEFAULT_PHONE_COL if DEFAULT_PHONE_COL in df.columns else ALT_PHONE_COL
-    if phone_col not in df.columns:
-        raise ValueError("전화번호 컬럼 없음: 수취인연락처1 또는 구매자연락처 필요")
-    group_cols = ["수취인명", phone_col, "통합배송지", "_VendorID"]
+    bundle_col = "배송비 묶음번호"
+    if bundle_col not in df.columns:
+        raise ValueError(f"병합 키 컬럼 없음: {bundle_col}")
+    # 배송비 묶음번호 기준 병합 + _VendorID(내부 라우팅용)
+    group_cols = [bundle_col, "_VendorID"]
     for c in group_cols:
         if c not in df.columns:
             raise ValueError(f"병합 키 컬럼 없음: {c}")
@@ -643,29 +644,36 @@ def merge_orders(df, option_rules=None):
             return f"{int(total_weight)}kg"
         return f"{total_weight}kg"
 
-    def _dedup_preserve_order(items):
-        return list(dict.fromkeys(x for x in items if x))
-
     def process_group(gdf):
         has_weight_col = "_calculated_weight" in gdf.columns
+        has_qty_col = "수량" in gdf.columns
         weight_vals = gdf["_calculated_weight"].fillna(0) if has_weight_col else pd.Series(0.0, index=gdf.index)
 
-        weight_dict = {}  # unique_option_name -> total_weight (insertion order preserved)
-        normal_opts = []  # options with no weight, deduplicated in order
+        weight_dict = {}   # option -> total_weight (insertion order preserved)
+        normal_dict = {}   # option -> total_qty (insertion order preserved)
 
         for idx, row in gdf.iterrows():
             w = float(weight_vals.loc[idx]) if has_weight_col else 0.0
             opt = row.get("processed_option")
             processed_option = "" if (opt is None or (isinstance(opt, float) and pd.isna(opt))) else str(opt).strip()
+            row_qty = _safe_int(row.get("수량"), 1) if has_qty_col else 1
             if w > 0:
                 weight_dict[processed_option] = weight_dict.get(processed_option, 0) + w
             else:
-                if processed_option and processed_option not in normal_opts:
-                    normal_opts.append(processed_option)
+                if processed_option:
+                    normal_dict[processed_option] = normal_dict.get(processed_option, 0) + row_qty
 
+        # 무게 옵션: 동일 옵션은 무게 합산 (기존 로직 유지)
         formatted_weight_strings = [f"{name} {_format_weight(t)}" for name, t in weight_dict.items()]
         weight_str = " / ".join(formatted_weight_strings) if formatted_weight_strings else ""
-        normal_str = " / ".join(normal_opts) if normal_opts else ""
+        # 일반 옵션: 동일 옵션은 "/" 없이 단일 표시 + (x qty) 표기
+        normal_parts = []
+        for opt, total_qty in normal_dict.items():
+            if total_qty > 1:
+                normal_parts.append(f"{opt} (x{total_qty})")
+            else:
+                normal_parts.append(opt)
+        normal_str = " / ".join(normal_parts) if normal_parts else ""
         if weight_str and normal_str:
             processed_option = weight_str + " / " + normal_str
         else:
@@ -681,6 +689,8 @@ def merge_orders(df, option_rules=None):
                 out[col] = processed_option
             elif col == "_calculated_weight":
                 out[col] = total_weight if has_weight_col else 0.0
+            elif col == "수량":
+                out[col] = gdf[col].apply(lambda v: _safe_int(v, 1)).sum()
             elif col == "배송메세지":
                 out[col] = join_unique_messages(gdf[col])
             elif col == "결제일":
@@ -938,14 +948,10 @@ def main():
         st.warning("처리할 데이터가 없습니다.")
         return
 
-    required = ["수량", "상품명", "옵션정보", "수취인명", "통합배송지", "배송메세지"]
-    phone_ok = DEFAULT_PHONE_COL in df.columns or ALT_PHONE_COL in df.columns
-    if not phone_ok:
-        st.error("필수 컬럼 누락: 수취인연락처1 또는 구매자연락처")
-        return
+    required = ["수량", "상품명", "옵션정보", "배송비 묶음번호"]
     missing = [c for c in required if c not in df.columns]
-    if missing and ("상품명" not in df.columns or "옵션정보" not in df.columns or "수취인명" not in df.columns or "통합배송지" not in df.columns):
-        st.error("최소한 상품명, 옵션정보, 수취인명, 통합배송지가 필요합니다.")
+    if missing:
+        st.error(f"필수 컬럼 누락: {', '.join(missing)}")
         return
 
     st.subheader("Raw Data Preview (상위 5행)")
