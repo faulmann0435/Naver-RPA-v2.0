@@ -531,7 +531,10 @@ def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵�
         elif action == "UNMASK_TEXT":
             text = _apply_unmask_text(text, param)
         elif action == "CALC_UNIT":
+            prev_text = text
             text = _apply_calc_unit(text, param, qty)
+            if text != prev_text and qty > 1:
+                qty_display_lock_ref[0] = True
         elif action == "APPEND_QTY_UNIT":
             if qty_display_lock_ref[0]:
                 if do_log:
@@ -656,7 +659,8 @@ def merge_orders(df, option_rules=None):
             w = float(weight_vals.loc[idx]) if has_weight_col else 0.0
             opt = row.get("processed_option")
             processed_option = "" if (opt is None or (isinstance(opt, float) and pd.isna(opt))) else str(opt).strip()
-            row_qty = _safe_int(row.get("수량"), 1) if has_qty_col else 1
+            is_formatted = bool(row.get("_is_formatted", False))
+            row_qty = (1 if is_formatted else _safe_int(row.get("수량"), 1)) if has_qty_col else 1
             if w > 0:
                 weight_dict[processed_option] = weight_dict.get(processed_option, 0) + w
             else:
