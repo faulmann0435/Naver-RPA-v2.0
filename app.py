@@ -356,16 +356,29 @@ def _apply_unmask_text(text, param):
 
 def _apply_convert_weight_range_fix(text, qty, calculated_weight_ref):
     """
-    One-Shot Safe: Find weight patterns. If range (e.g. 800g-1kg), take MAX only.
+    One-Shot Safe: Find weight patterns outside parentheses only. If range (e.g. 800g-1kg), take MAX only.
     weight_kg = MaxValue_kg * RowQty. Update calculated_weight_ref; remove weight text from string.
     Do NOT append weight to text; merge_orders will append the total once.
     Caller must check _weight_calculated lock before invoking (prevents double count).
     """
     qty = _safe_int(qty, 1)
-    pattern = re.compile(r"(\d+(?:\.\d+)?)\s*(g|kg|G|KG)(?!\s*내외)", re.IGNORECASE)
-    matches = list(pattern.finditer(str(text)))
+    weight_pattern = re.compile(r"(\d+(?:\.\d+)?)\s*(g|kg|G|KG)(?!\s*내외)", re.IGNORECASE)
+    paren_pattern = re.compile(r"\([^)]*\)")
+
+    # Mask parenthetical content so weights inside parentheses are not converted
+    paren_store = {}
+    counter = [0]
+    def _mask(m):
+        key = f"\x00P{counter[0]}\x00"
+        paren_store[key] = m.group(0)
+        counter[0] += 1
+        return key
+    masked = paren_pattern.sub(_mask, str(text))
+
+    matches = list(weight_pattern.finditer(masked))
     if not matches:
-        return text
+        return text  # no weights outside parentheses — return original unchanged
+
     values_kg = []
     for m in matches:
         num = float(m.group(1))
@@ -375,7 +388,10 @@ def _apply_convert_weight_range_fix(text, qty, calculated_weight_ref):
     max_kg = max(values_kg)
     weight_kg = max_kg * qty
     calculated_weight_ref[0] += weight_kg
-    cleaned = pattern.sub("", str(text)).strip()
+
+    cleaned = weight_pattern.sub("", masked).strip()
+    for key, val in paren_store.items():
+        cleaned = cleaned.replace(key, val)
     return cleaned
 
 
