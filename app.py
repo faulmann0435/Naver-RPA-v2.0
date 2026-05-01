@@ -39,7 +39,7 @@ def _strip_columns(df):
 def find_header_row(preview_df):
     for i in range(len(preview_df)):
         row_vals = preview_df.iloc[i].astype(str).str.strip().tolist()
-        row_text = " ".join(row_vals)
+        row_text = " ".join(str(x) for x in row_vals)
         if all(kw in row_text for kw in HEADER_KEYWORDS):
             return i
     return 0
@@ -57,7 +57,7 @@ def ensure_quantity_column(df):
 # ============== Config Loader (v14.3: load_config_local + cache) ==============
 
 @st.cache_data(ttl=3600)
-def load_config_local(config_path: str, _password: str = None, _cache_key: str = None):
+def load_config_local(config_path: str, _password: str = None, cache_key: str = None):
     """
     Load config.xlsx with password support. Uses msoffcrypto if encrypted.
     Returns: dict with keys ['ProductRoute', 'OptionRules', 'OutputLayout']
@@ -637,7 +637,7 @@ def merge_orders(df, option_rules=None):
 
     def join_unique_messages(ser):
         parts = ser.dropna().astype(str).str.strip().unique().tolist()
-        return " / ".join(p for p in parts if p)
+        return " / ".join(str(p) for p in parts if p)
 
     def _format_weight(total_weight):
         if total_weight == int(total_weight):
@@ -665,7 +665,7 @@ def merge_orders(df, option_rules=None):
 
         # 무게 옵션: 동일 옵션은 무게 합산 (기존 로직 유지)
         formatted_weight_strings = [f"{name} {_format_weight(t)}" for name, t in weight_dict.items()]
-        weight_str = " / ".join(formatted_weight_strings) if formatted_weight_strings else ""
+        weight_str = " / ".join(str(x) for x in formatted_weight_strings) if formatted_weight_strings else ""
         # 일반 옵션: 동일 옵션은 "/" 없이 단일 표시 + (x qty) 표기
         normal_parts = []
         for opt, total_qty in normal_dict.items():
@@ -673,7 +673,7 @@ def merge_orders(df, option_rules=None):
                 normal_parts.append(f"{opt} (x{total_qty})")
             else:
                 normal_parts.append(opt)
-        normal_str = " / ".join(normal_parts) if normal_parts else ""
+        normal_str = " / ".join(str(x) for x in normal_parts) if normal_parts else ""
         if weight_str and normal_str:
             processed_option = weight_str + " / " + normal_str
         else:
@@ -886,7 +886,7 @@ def main():
             st.info("config.xlsx를 앱과 같은 폴더에 두거나 경로를 확인하세요.")
             return
         cache_key = f"{path.stat().st_mtime}_{path.stat().st_size}"
-        config = load_config_local(config_path, _password="1111", _cache_key=cache_key)
+        config = load_config_local(config_path, _password="1111", cache_key=cache_key)
     except FileNotFoundError as e:
         st.error(str(e))
         return
@@ -951,7 +951,7 @@ def main():
     required = ["수량", "상품명", "옵션정보", "배송비 묶음번호"]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        st.error(f"필수 컬럼 누락: {', '.join(missing)}")
+        st.error(f"필수 컬럼 누락: {', '.join(str(x) for x in missing)}")
         return
 
     st.subheader("Raw Data Preview (상위 5행)")
