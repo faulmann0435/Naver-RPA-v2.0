@@ -643,9 +643,12 @@ def merge_orders(df, option_rules=None):
         return " / ".join(str(p) for p in parts if p)
 
     def _format_weight(total_weight):
-        if total_weight == int(total_weight):
-            return f"{int(total_weight)}kg"
-        return f"{total_weight}kg"
+        if total_weight < 1.0:
+            return f"{round(total_weight * 1000)}g"
+        rounded = round(total_weight, 3)
+        if rounded == int(rounded):
+            return f"{int(rounded)}kg"
+        return f"{rounded}kg"
 
     def process_group(gdf):
         has_weight_col = "_calculated_weight" in gdf.columns
