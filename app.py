@@ -362,7 +362,7 @@ def _apply_convert_weight_range_fix(text, qty, calculated_weight_ref):
     Caller must check _weight_calculated lock before invoking (prevents double count).
     """
     qty = _safe_int(qty, 1)
-    pattern = re.compile(r"(\d+(?:\.\d+)?)\s*(g|kg|G|KG)", re.IGNORECASE)
+    pattern = re.compile(r"(\d+(?:\.\d+)?)\s*(g|kg|G|KG)(?!\s*내외)", re.IGNORECASE)
     matches = list(pattern.finditer(str(text)))
     if not matches:
         return text
