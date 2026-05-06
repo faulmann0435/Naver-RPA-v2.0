@@ -564,8 +564,10 @@ def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵�
                     debug_log.append(f"Row {row_index} Rule #{rule_idx} (Action: GROUP_MULTIPLY) -> SKIP (qty_display_lock)")
                 continue
             # Trigger if param in full_context; append (xQty) to text (option only)
+            prev_text = text
             text = _apply_group_multiply(text, param, qty, search_in=full_context)
-            qty_display_lock_ref[0] = True
+            if text != prev_text:
+                qty_display_lock_ref[0] = True
         elif action == "APPEND_SUFFIX":
             text = _apply_append_suffix(text, param)
         elif action == "PREPEND_TEXT":
