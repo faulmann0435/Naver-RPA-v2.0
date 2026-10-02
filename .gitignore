@@ -1,0 +1,30 @@
+# ── 비밀값: DB 접속 정보, 로그인 설정 ──
+.streamlit/secrets.toml
+.env
+.env.*
+
+# ── 고객 개인정보가 들어 있을 수 있는 파일 ──
+# 주문 파일·발주서·백업은 저장소에 올리지 않는다. config.xlsx만 예외.
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+!config.xlsx
+# 회귀 테스트 기준 결과 (실제 주문 데이터로 만듦)
+tests/golden/
+# 가짜 데이터로 만든 테스트 파일은 이 폴더에만 둔다 (예외 허용)
+!tests/fixtures/*.xlsx
+!tests/fixtures/*.csv
+
+# ── 엑셀 임시·잠금 파일, 압축 파일 ──
+~$*
+*.zip
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
