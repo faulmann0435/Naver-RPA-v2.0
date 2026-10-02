@@ -14,6 +14,7 @@ from store.rules_repo import DICTIONARY_COLUMNS
 from tests.regression_harness import (
     CONFIG_PATH,
     _Upload,
+    case_available,
     compare_case,
     load_manifest,
     sample_dir,
@@ -45,19 +46,25 @@ UNRELATED = _dictionary(
 
 @pytest.mark.parametrize("key", sorted(MANIFEST) or ["<none>"])
 def test_empty_dictionary_matches_golden(key):
+    if not case_available(MANIFEST[key]):
+        pytest.skip("encrypted sample: set RPA_ORDER_PASSWORD")
     problems = compare_case(key, MANIFEST[key], runner=_runner(ItemDictionary.empty()))
     assert not problems, "\n".join(problems[:30])
 
 
 @pytest.mark.parametrize("key", sorted(MANIFEST) or ["<none>"])
 def test_unrelated_dictionary_matches_golden(key):
+    if not case_available(MANIFEST[key]):
+        pytest.skip("encrypted sample: set RPA_ORDER_PASSWORD")
     problems = compare_case(key, MANIFEST[key], runner=_runner(UNRELATED))
     assert not problems, "\n".join(problems[:30])
 
 
 def test_matching_entry_changes_output():
-    key = min(MANIFEST)
-    entry = MANIFEST[key]
+    plain = sorted(k for k, v in MANIFEST.items() if not v.get("encrypted"))
+    if not plain:
+        pytest.skip("no unencrypted golden case")
+    entry = MANIFEST[plain[0]]
     df = filter_instruction_rows(load_excel(_Upload(sample_dir() / entry["input"])))
     if "상품번호" not in df.columns or df.empty:
         pytest.skip("first golden case has no 상품번호 column")

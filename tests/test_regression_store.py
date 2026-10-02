@@ -4,7 +4,12 @@ import pytest
 from core.config_loader import read_config_sheets
 from store.memory_store import MemoryStore
 from store.rules_repo import load_config_from_store, sheets_to_rule_csvs
-from tests.regression_harness import CONFIG_PATH, compare_case, load_manifest
+from tests.regression_harness import (
+    CONFIG_PATH,
+    case_available,
+    compare_case,
+    load_manifest,
+)
 
 MANIFEST = load_manifest()
 
@@ -24,5 +29,7 @@ def store_config() -> dict:
 
 @pytest.mark.parametrize("key", sorted(MANIFEST) or ["<none>"])
 def test_store_output_matches_golden(key, store_config):
+    if not case_available(MANIFEST[key]):
+        pytest.skip("encrypted sample: set RPA_ORDER_PASSWORD")
     problems = compare_case(key, MANIFEST[key], config=store_config)
     assert not problems, "\n".join(problems[:30])

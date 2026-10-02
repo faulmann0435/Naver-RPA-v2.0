@@ -54,6 +54,26 @@ class _Upload:
         return self._data
 
 
+def order_password() -> str | None:
+    """Password for encrypted sample order files (env RPA_ORDER_PASSWORD; never stored in the repo)."""
+    return os.environ.get("RPA_ORDER_PASSWORD") or None
+
+
+def _read_order(load_excel: Callable, path: Path) -> tuple[pd.DataFrame, bool]:
+    """Load an order file; returns (df, encrypted). Tries without password first."""
+    try:
+        return load_excel(_Upload(path)), False
+    except ValueError:
+        if order_password() is None:
+            raise
+        return load_excel(_Upload(path), password=order_password()), True
+
+
+def case_available(entry: dict) -> bool:
+    """False when the case needs the order password and none is set."""
+    return not entry.get("encrypted") or order_password() is not None
+
+
 def _entrypoints():
     """Return (load_config, load_order, process_all_data) from the refactored package or legacy app."""
     try:
@@ -70,14 +90,14 @@ def _entrypoints():
 
 
 def discover_inputs() -> list[Path]:
-    """All readable (unencrypted) order files with the required columns, outside the repo."""
+    """All readable order files with the required columns, outside the repo (encrypted ones need RPA_ORDER_PASSWORD)."""
     _, load_excel, _ = _entrypoints()
     found = []
     for path in sorted(sample_dir().rglob("*.xlsx")):
         if REPO_ROOT in path.parents or path.name.startswith("~$") or path.name == "config.xlsx":
             continue
         try:
-            df = load_excel(_Upload(path))
+            df, _ = _read_order(load_excel, path)
         except Exception:
             continue  # encrypted, not an order file, etc.
         if REQUIRED_COLUMNS <= set(df.columns):
@@ -105,7 +125,7 @@ def run_case(path: Path, config: dict | None = None, runner: Callable | None = N
     load_config, load_excel, process_all_data = _entrypoints()
     if config is None:
         config = load_config(str(CONFIG_PATH))
-    df = load_excel(_Upload(path))
+    df, _ = _read_order(load_excel, path)
     results = (runner or process_all_data)(df, config)
     return [
         OutputFile(name=_DATE_SUFFIX.sub("", r["filename"]), vendor=r["vendor"], data=r["data"].getvalue())
@@ -139,6 +159,7 @@ def update_golden() -> None:
             (case_dir / out.name).write_bytes(out.data)
         manifest[key] = {
             "input": path.relative_to(sample_dir()).as_posix(),
+            "encrypted": _read_order(_entrypoints()[1], path)[1],
             "files": {o.name: {"vendor": o.vendor, "rows": len(_cells(o.data))} for o in outputs},
         }
         print(f"[golden] {key}: {len(outputs)} files")
