@@ -5,7 +5,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from core.template import validate_template
+from core.template import strip_invisible, validate_template
 
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 _PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
@@ -42,6 +42,7 @@ def _scaled(number: str) -> str:
 
 def build_template(sentence: str, scale: Sequence[bool]) -> str:
     """scale[i] applies to the i-th number of the sentence; missing entries mean False."""
+    sentence = strip_invisible(sentence)
     out: list[str] = []
     index = 0
     for piece in split_pieces(sentence):

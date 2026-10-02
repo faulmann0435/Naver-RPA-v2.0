@@ -69,10 +69,20 @@ def _apply_table_selection(table_key: str, summaries: list[ProductSummary]) -> N
 
 def _product_list(base: pd.DataFrame, ids: list[str], summaries: list[ProductSummary], table_key: str) -> None:
     st.text_input("검색 (상품명/옵션)", key=K_QUERY)
-    st.selectbox("발주양식", [ALL_VENDORS, *ids], key=K_VENDOR)
+    counts = base["vendor_id"].fillna("").astype(str).str.strip().value_counts().to_dict()
+    st.selectbox(
+        "발주양식", [ALL_VENDORS, *ids], key=K_VENDOR,
+        format_func=lambda v: v if v == ALL_VENDORS else f"{v} ({counts.get(v, 0)})",
+    )
     st.checkbox("확인 안 한 것만", key=K_REVIEW)
     dirty = dirty_products(base, st.session_state.get("pending", {}), st.session_state.get(S_DELETED, frozenset()))
     st.caption(f"상품 {len(summaries)}개")
+    vendor = st.session_state.get(K_VENDOR, ALL_VENDORS)
+    if not summaries and vendor != ALL_VENDORS and not counts.get(vendor, 0):
+        st.info(
+            f"'{vendor}'로 등록된 품목이 아직 없습니다. 이 발주양식으로 가는 주문이 들어오면 "
+            "주문처리 화면의 '사전 미등록' 상자에서 등록할 수 있고, 등록하면 여기에 나타납니다."
+        )
     st.dataframe(
         summary_table(summaries, dirty), key=table_key, on_select="rerun", selection_mode="single-row",
         hide_index=True, width="stretch", height=TABLE_HEIGHT, column_config=TABLE_COLUMNS,

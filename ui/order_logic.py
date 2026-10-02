@@ -15,6 +15,7 @@ from core.dictionary import (
 )
 from core.merger import _format_weight
 from core.seed import probe_row, strip_ignored_groups
+from core.template import clean_display_text
 from store.base import Author, DataStore
 from store.dictionary_repo import AppendResult, append_entries
 from store.validators import Issue, validate_new_entry
@@ -64,6 +65,7 @@ def _suggestion_row(
         template = probe.template
     else:
         template = _text(row["display_suggestion"]).strip()
+    template, group = clean_display_text(template), clean_display_text(group)
     return {
         COL_CHECK: False, COL_NAME: name, COL_OPTION: option, COL_QTY: int(row["qty_example"]),
         COL_COUNT: int(row["count"]), COL_VENDOR: vendor, COL_TEMPLATE: template, COL_QTY1: "",

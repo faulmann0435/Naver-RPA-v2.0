@@ -46,3 +46,34 @@ def render(t: str, qty: int) -> str:
         return format_number(qty * float(factor) if factor else qty)
 
     return _PLACEHOLDER.sub(_replace, t)
+
+
+# Variation selectors, zero-width joiner and stray BOMs left over from removed emoji: never intentional.
+_INVISIBLE = re.compile("[︎️‍﻿]")
+
+
+def strip_invisible(text: str) -> str:
+    """Remove invisible characters (U+FE0E/FE0F/200D/FEFF); everything else, spaces included, is kept."""
+    return _INVISIBLE.sub("", text)
+
+
+KEEP_SYMBOLS = frozenset("★☆")
+_SPACES = re.compile(r"[ 	]{2,}")
+
+
+def clean_display_text(text: str, keep: frozenset[str] = KEEP_SYMBOLS) -> str:
+    """Purchase-order text without emoji / decorative symbols (except `keep`, e.g. ★☆) and invisible characters.
+
+    Placeholders such as {수량*8} are untouched (they contain no symbols). Double spaces left behind
+    are collapsed and the ends trimmed.
+    """
+    import unicodedata
+
+    out = []
+    for ch in strip_invisible(text):
+        code = ord(ch)
+        is_emoji = unicodedata.category(ch) == "So" or 0x1F3FB <= code <= 0x1F3FF
+        if is_emoji and ch not in keep:
+            continue
+        out.append(ch)
+    return _SPACES.sub(" ", "".join(out)).strip()

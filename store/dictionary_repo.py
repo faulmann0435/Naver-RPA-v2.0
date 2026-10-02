@@ -173,6 +173,55 @@ def append_entries(
     raise ConflictError("unreachable")  # pragma: no cover
 
 
+def _all_keys(frame: pd.DataFrame, settings: DictionarySettings) -> set[tuple[str, str]]:
+    """Keys of every row, enabled or not (a disabled row is a decision too)."""
+    return {entry_key(r["product_no"], r["option_key"], settings) for _, r in frame.fillna("").iterrows()}
+
+
+def add_missing_entries(
+    store: DataStore,
+    candidates: pd.DataFrame,
+    author: Author,
+    settings: DictionarySettings,
+    max_retries: int = 3,
+) -> AppendResult:
+    """Add candidate rows (e.g. from the seed tool) whose key is not in the dictionary yet.
+
+    Existing rows - edited, reviewed or disabled - are never touched. Candidate rows keep their
+    own fields (source, needs_review, templates). Conflicts are retried like append_entries.
+    """
+    rows = candidates.reindex(columns=DICTIONARY_COLUMNS, fill_value="").fillna("").astype(str)
+    for attempt in range(max_retries + 1):
+        snapshot = store.read_text(DICTIONARY_FILE)
+        frame = frame_from_snapshot(snapshot)
+        sha = snapshot.sha if snapshot else None
+        known = _all_keys(frame, settings)
+        added: list[tuple[str, str]] = []
+        skipped: list[tuple[str, str]] = []
+        new_rows = []
+        for _, row in rows.iterrows():
+            key = entry_key(row["product_no"], row["option_key"], settings)
+            if key in known:
+                skipped.append(key)
+                continue
+            known.add(key)
+            added.append(key)
+            new_rows.append({**row.to_dict(), "product_no": key[0], "option_key": key[1]})
+        if not added:
+            return AppendResult([], skipped, sha or "")
+        merged = pd.concat([frame.reindex(columns=DICTIONARY_COLUMNS), pd.DataFrame(new_rows, columns=DICTIONARY_COLUMNS)],
+                           ignore_index=True)
+        message = f"사전 초안 추가 {len(added)}건 (기존 항목 유지, 검토 필요)"
+        try:
+            new_sha = store.write_text(DICTIONARY_FILE, to_csv_text(merged), sha, message, author)
+        except ConflictError:
+            if attempt == max_retries:
+                raise
+            continue
+        return AppendResult(added, skipped, new_sha)
+    raise ConflictError("unreachable")  # pragma: no cover
+
+
 # ---------------------------------------------------------------- per-product save
 
 RowKey = tuple[str, str]

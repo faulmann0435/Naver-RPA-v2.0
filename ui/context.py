@@ -7,7 +7,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from core.config_loader import load_config
+from core.config_loader import load_config, read_config_sheets
 from core.dictionary import DictionarySettings, ItemDictionary
 from store.base import Author, DataStore, StoreError
 from store.dictionary_repo import empty_frame, load_dictionary_frame, load_state
@@ -131,6 +131,16 @@ def load_config_or_error() -> dict | None:
     except (ValueError, StoreError) as e:
         st.error(str(e))
     return None
+
+
+@st.cache_data(ttl=3600)
+def _raw_layout(config_path: str, _password: str | None, cache_key: str) -> pd.DataFrame:
+    return read_config_sheets(config_path, _password)["OutputLayout"]
+
+
+def load_raw_layout() -> pd.DataFrame:
+    """OutputLayout exactly as read from config.xlsx (the rule checks normalize it themselves)."""
+    return _raw_layout(CONFIG_PATH, CONFIG_PASSWORD, _file_cache_key(CONFIG_PATH)).copy()
 
 
 def vendor_ids(config: dict) -> list[str]:

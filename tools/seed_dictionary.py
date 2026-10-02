@@ -76,7 +76,10 @@ def _print_summary(seed: SeedResult, evals: list[PoEval], pairs_skipped: int) ->
     print(f"normalized match A {total.norm_a} -> B {total.norm_b}")
 
 
-def run(out_path: Path, report_path: Path, separator: str = DictionarySettings().item_separator) -> None:
+def run(
+    out_path: Path, report_path: Path, separator: str = DictionarySettings().item_separator,
+    merge_branch: str | None = None,
+) -> None:
     password = order_password()
     root = sample_dir()
     config = load_config(str(CONFIG_PATH))
@@ -107,6 +110,25 @@ def run(out_path: Path, report_path: Path, separator: str = DictionarySettings()
     _print_summary(seed, evals, pairs_skipped)
     print(f"csv: {out_path}")
     print(f"report: {report_path}")
+    if merge_branch:
+        _merge_into_store(frame, merge_branch, settings)
+
+
+def _merge_into_store(frame: pd.DataFrame, branch: str, settings: DictionarySettings) -> None:
+    """Add only the entries whose key is missing in the data repository (existing rows are kept)."""
+    import tomllib
+
+    from store.base import Author
+    from store.dictionary_repo import add_missing_entries
+    from store.github_store import GitHubStore
+
+    secrets = ROOT / ".streamlit" / "secrets.toml"
+    with secrets.open("rb") as f:
+        section = dict(tomllib.load(f)["data_store"])
+    section["branch"] = branch
+    store = GitHubStore.from_secrets(section)
+    result = add_missing_entries(store, frame, Author("seed tool", "seed@local"), settings)
+    print(f"merge into {store.repo}@{branch}: added {len(result.added)}, kept existing {len(result.skipped_existing)}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -118,8 +140,12 @@ def main(argv: list[str] | None = None) -> None:
         "--separator", default=DictionarySettings().item_separator,
         help='item separator used when evaluating (settings.json item_separator), e.g. ", "',
     )
+    parser.add_argument(
+        "--merge-to", dest="merge_to", default=None,
+        help="data repo branch (e.g. dev): add only entries whose key is missing; existing rows are kept",
+    )
     args = parser.parse_args(argv)
-    run(args.out, args.report, args.separator)
+    run(args.out, args.report, args.separator, args.merge_to)
 
 
 if __name__ == "__main__":

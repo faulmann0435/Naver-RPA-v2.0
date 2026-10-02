@@ -5,6 +5,7 @@ import pandas as pd
 
 from core.actions import _safe_int
 from core.dictionary import render_entry
+from core.template import strip_invisible
 
 FILTER_PHRASE = "다운로드 받은 파일로 '엑셀 일괄발송' 처리하는 방법"
 
@@ -155,7 +156,7 @@ def _dictionary_parts(dict_rows):
         else:
             slots[("entry", key)] = render_entry(entry, total_qty)
     parts = [
-        f"{slot[1]} {_format_weight(value)}" if slot[0] == "group" else value
+        f"{strip_invisible(slot[1])} {_format_weight(value)}" if slot[0] == "group" else value
         for slot, value in slots.items()
     ]
     return parts, suffixes

@@ -144,3 +144,36 @@ def test_append_entries_gives_up_after_retries():
     store = _RacyStore(_seeded(), failures=10)
     with pytest.raises(ConflictError):
         append_entries(store, [{**ROW, "product_no": "5"}], AUTHOR, DictionarySettings(), max_retries=2)
+
+
+def test_add_missing_entries_keeps_existing_and_disabled_rows():
+    import pandas as pd
+
+    from core.dictionary import DictionarySettings
+    from store.base import Author
+    from store.csv_codec import to_csv_text
+    from store.dictionary_repo import add_missing_entries, load_dictionary_frame
+    from store.memory_store import MemoryStore
+    from store.rules_repo import DICTIONARY_COLUMNS, DICTIONARY_FILE
+
+    def row(no, key, template, **extra):
+        return {**dict.fromkeys(DICTIONARY_COLUMNS, ""), "channel": "naver", "product_no": no, "option_key": key,
+                "vendor_id": "속초 발주양식", "display_template": template, "enabled": "1", **extra}
+
+    store = MemoryStore()
+    existing = pd.DataFrame([row("1", "a", "사람이 고침", needs_review="0", source="manual"),
+                             row("2", "b", "꺼둠", enabled="0")], columns=DICTIONARY_COLUMNS)
+    store.write_text(DICTIONARY_FILE, to_csv_text(existing), None, "init")
+    seed = pd.DataFrame([row("1", "a", "초안이 덮으면 안 됨", needs_review="1", source="auto_rule"),
+                         row("2", "b", "다시 켜면 안 됨", needs_review="1", source="auto_rule"),
+                         row("3", "c", "새 항목 {수량}개", needs_review="1", source="auto_rule"),
+                         row("3", "c", "같은 키 두 번", needs_review="1", source="auto_rule")], columns=DICTIONARY_COLUMNS)
+    result = add_missing_entries(store, seed, Author("seed tool", "x@y"), DictionarySettings())
+    assert result.added == [("3", "c")] and len(result.skipped_existing) == 3
+    frame, _ = load_dictionary_frame(store)
+    by_key = {(r["product_no"], r["option_key"]): r for _, r in frame.fillna("").astype(str).iterrows()}
+    assert by_key[("1", "a")]["display_template"] == "사람이 고침"
+    assert by_key[("2", "b")]["enabled"] == "0"
+    assert by_key[("3", "c")]["source"] == "auto_rule" and by_key[("3", "c")]["needs_review"] == "1"
+    assert len(frame) == 3
+    assert add_missing_entries(store, seed, Author("seed tool", "x@y"), DictionarySettings()).added == []

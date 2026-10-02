@@ -81,8 +81,8 @@ def test_full_app_navigates_all_pages():
     at.session_state["_test_store"] = _seeded_store()
     at.run()
     assert not at.exception
-    for name in ("품목사전", "미리보기", "주문처리"):
-        at.switch_page(f"ui/{ {'품목사전': 'dictionary', '미리보기': 'preview', '주문처리': 'order'}[name] }_page.py").run()
+    for page in ("dictionary", "preview", "order", "rules", "history"):
+        at.switch_page(f"ui/{page}_page.py").run()
         assert not at.exception
 
 

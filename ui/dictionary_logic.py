@@ -244,3 +244,8 @@ def to_excel_bytes(frame: pd.DataFrame) -> bytes:
         buffer, index=False, sheet_name="품목사전"
     )
     return buffer.getvalue()
+
+
+# Public names for the other pages (Excel import, history) that compare / write dictionary cells.
+field_differences = _differences
+apply_cell = _apply_cell

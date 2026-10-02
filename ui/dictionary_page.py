@@ -37,6 +37,7 @@ from ui.dictionary_logic import (
     prepare_save,
     to_excel_bytes,
 )
+from ui.excel_import_page import render_import
 
 S_BASE, S_WORK, S_VERSION, S_CONFLICT, S_XLSX = "dict_base", "dict_work", "dict_version", "dict_conflict", "dict_xlsx"
 
@@ -196,6 +197,7 @@ def _grid_tab(base: pd.DataFrame, sha: str | None, ids: list[str]) -> None:
     _save_controls(base, sha, work, ids)
     _conflict_box()
     _excel_export(base, sha)
+    render_import(base, sha, ids, load_base)
 
 
 def render() -> None:

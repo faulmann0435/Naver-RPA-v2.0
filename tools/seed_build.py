@@ -18,6 +18,7 @@ from core.seed import (
     strip_ignored_groups,
     verify_probe,
 )
+from core.template import clean_display_text
 from store.rules_repo import DICTIONARY_COLUMNS
 from tools.seed_data import clean_text
 
@@ -133,9 +134,9 @@ def _row(item: SeedItem, now: str) -> dict[str, object]:
         "product_name_ref": entry.product_name_ref,
         "option_raw_ref": entry.option_raw_ref,
         "vendor_id": entry.vendor_id,
-        "display_template": entry.display_template,
+        "display_template": clean_display_text(entry.display_template),
         "display_template_qty1": "",
-        "sum_group": entry.sum_group,
+        "sum_group": clean_display_text(entry.sum_group),
         "unit_weight_kg": "" if entry.unit_weight_kg is None else entry.unit_weight_kg,
         "append_to_end": 0,
         "needs_review": 1,

@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from core.option_key import make_option_key, normalize_product_no
-from core.template import has_qty_placeholder, render
+from core.template import has_qty_placeholder, render, strip_invisible
 
 DEFAULT_IGNORED_GROUPS: tuple[str, ...] = ("수령일 선택 (도착시간 지정불가)",)
 DEFAULT_SEPARATOR = " / "
@@ -154,7 +154,7 @@ def render_entry(entry: DictionaryEntry, qty: int) -> str:
     """Display text for `qty` units; plain templates get a ' (xN)' suffix when qty > 1."""
     use_qty1 = qty == 1 and bool(entry.display_template_qty1)
     template = entry.display_template_qty1 if use_qty1 else entry.display_template
-    text = render(template, qty)
+    text = strip_invisible(render(template, qty))
     if not has_qty_placeholder(template) and qty > 1:
         text = f"{text} (x{qty})"
     return text

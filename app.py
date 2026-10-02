@@ -4,7 +4,7 @@ UI only; processing logic lives in core/, storage in store/, screens in ui/.
 """
 import streamlit as st
 
-from ui import dictionary_page, order_page, preview_page
+from ui import dictionary_page, history_page, order_page, preview_page, rules_page
 from ui.context import (  # noqa: F401  # re-exported: tests and other modules import them from app
     CONFIG_PATH,
     get_config,
@@ -32,6 +32,8 @@ def main() -> None:
             st.Page(order_page.render, title="주문처리", icon="📦", url_path="order", default=True),
             st.Page(dictionary_page.render, title="품목 관리", icon="📖", url_path="dictionary"),
             st.Page(preview_page.render, title="결과 확인", icon="🧪", url_path="preview"),
+            st.Page(rules_page.render, title="고급 설정", icon="⚙️", url_path="rules"),
+            st.Page(history_page.render, title="변경 이력", icon="🕓", url_path="history"),
         ]
     )
     navigation.run()
