@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -96,13 +97,16 @@ class OutputFile:
     data: bytes
 
 
-def run_case(path: Path, config: dict | None = None) -> list[OutputFile]:
-    """Run the pipeline; uses `config` when given, else loads config.xlsx."""
+def run_case(path: Path, config: dict | None = None, runner: Callable | None = None) -> list[OutputFile]:
+    """Run the pipeline; uses `config` when given, else loads config.xlsx.
+
+    `runner(df, config) -> list[dict]` replaces process_all_data when given.
+    """
     load_config, load_excel, process_all_data = _entrypoints()
     if config is None:
         config = load_config(str(CONFIG_PATH))
     df = load_excel(_Upload(path))
-    results = process_all_data(df, config)
+    results = (runner or process_all_data)(df, config)
     return [
         OutputFile(name=_DATE_SUFFIX.sub("", r["filename"]), vendor=r["vendor"], data=r["data"].getvalue())
         for r in results
@@ -149,12 +153,12 @@ def load_manifest() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def compare_case(key: str, entry: dict, config: dict | None = None) -> list[str]:
+def compare_case(key: str, entry: dict, config: dict | None = None, runner: Callable | None = None) -> list[str]:
     """Return a list of human-readable differences (empty = identical)."""
     path = sample_dir() / entry["input"]
     if not path.exists():
         return [f"input missing: {path}"]
-    actual = {o.name: o for o in run_case(path, config)}
+    actual = {o.name: o for o in run_case(path, config, runner)}
     expected = set(entry["files"])
     problems = []
     if set(actual) != expected:

@@ -7,9 +7,10 @@ ROOT = Path(__file__).resolve().parent.parent
 CORE_MODULES = [
     "core", "core.config_loader", "core.loader", "core.actions", "core.engine",
     "core.router", "core.merger", "core.exporter", "core.pipeline",
+    "core.option_key", "core.template", "core.dictionary",
 ]
 STORE_MODULES = [
-    "store", "store.base", "store.memory_store", "store.github_store", "store.csv_codec", "store.rules_repo",
+    "store", "store.base", "store.memory_store", "store.github_store", "store.csv_codec", "store.rules_repo", "store.dictionary_repo",
 ]
 
 
