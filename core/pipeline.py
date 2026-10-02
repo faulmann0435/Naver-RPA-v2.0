@@ -31,6 +31,7 @@ class ProcessResult:
     files: list[dict]
     unmatched: pd.DataFrame
     stats: dict[str, int]
+    merged: pd.DataFrame | None = None  # merged frame before export (used by the preview page)
 
 
 def _column_values(df: pd.DataFrame, name: str) -> list:
@@ -144,7 +145,9 @@ def process_orders(
         merged = sort_by_payment_date(merged)
 
     # 6. 파일 생성 (Export)
-    return ProcessResult(files=export_individual_files(merged, config), unmatched=unmatched, stats=stats)
+    return ProcessResult(
+        files=export_individual_files(merged, config), unmatched=unmatched, stats=stats, merged=merged
+    )
 
 
 def process_all_data(df, config):

@@ -8,12 +8,13 @@ warnings.filterwarnings("ignore")
 
 import app
 from store.base import StoreError
+from ui import context
 
 
 @pytest.fixture
 def configured(monkeypatch):
-    monkeypatch.setattr(app, "_data_store_settings", lambda: ("owner/data", "dev"))
-    monkeypatch.setattr(app, "load_config_local", lambda *a, **k: {"source": "xlsx"})
+    monkeypatch.setattr(context, "_data_store_settings", lambda: ("owner/data", "dev"))
+    monkeypatch.setattr(context, "load_config_local", lambda *a, **k: {"source": "xlsx"})
 
 
 @pytest.mark.parametrize(
@@ -29,20 +30,20 @@ def test_falls_back_to_xlsx_on_store_failure(configured, monkeypatch, error):
     def boom(*_args, **_kwargs):
         raise error
 
-    monkeypatch.setattr(app, "_load_config_from_data_store", boom)
+    monkeypatch.setattr(context, "_load_config_from_data_store", boom)
     config, label = app.get_config("config.xlsx", "key")
     assert config == {"source": "xlsx"}
     assert label == "config.xlsx"
 
 
 def test_uses_store_when_available(configured, monkeypatch):
-    monkeypatch.setattr(app, "_load_config_from_data_store", lambda *a: {"source": "store"})
+    monkeypatch.setattr(context, "_load_config_from_data_store", lambda *a: {"source": "store"})
     config, label = app.get_config("config.xlsx", "key")
     assert config == {"source": "store"}
     assert label == "데이터 저장소 (owner/data@dev)"
 
 
 def test_uses_xlsx_without_secrets(monkeypatch):
-    monkeypatch.setattr(app, "_data_store_settings", lambda: None)
-    monkeypatch.setattr(app, "load_config_local", lambda *a, **k: {"source": "xlsx"})
+    monkeypatch.setattr(context, "_data_store_settings", lambda: None)
+    monkeypatch.setattr(context, "load_config_local", lambda *a, **k: {"source": "xlsx"})
     assert app.get_config("config.xlsx", "key") == ({"source": "xlsx"}, "config.xlsx")

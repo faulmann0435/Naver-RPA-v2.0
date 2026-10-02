@@ -50,3 +50,97 @@ def test_from_csv_text_as_text_keeps_strings():
     text = BOM + "a,b\n0012,\n"
     assert from_csv_text(text, as_text=True).iloc[0].tolist() == ["0012", ""]
     assert from_csv_text(text)["a"].iloc[0] == 12
+
+
+# ---- save / append / conflict retry ------------------------------------------------------
+import pytest
+
+from store.base import Author, ConflictError
+from store.dictionary_repo import (
+    append_entries,
+    load_dictionary_frame,
+    save_dictionary,
+)
+
+AUTHOR = Author(name="tester", email="t@example.com")
+ROW = {"product_no": "10", "option_key": "옵션: A", "vendor_id": "V1", "display_template": "A {수량}"}
+
+
+def _seeded() -> MemoryStore:
+    store = MemoryStore()
+    store.write_text(DICTIONARY_FILE, _csv({"channel": "naver", "enabled": "1", "product_no": "1",
+                                            "vendor_id": "V1", "display_template": "X"}), None, "seed")
+    return store
+
+
+def test_save_dictionary_writes_and_records_author():
+    store = _seeded()
+    frame, sha = load_dictionary_frame(store)
+    frame.loc[0, "display_template"] = "Y"
+    new_sha = save_dictionary(store, frame, sha, AUTHOR, "수정")
+    assert new_sha != sha
+    assert load_dictionary_frame(store)[0].loc[0, "display_template"] == "Y"
+    assert store.history(DICTIONARY_FILE)[0].author == "tester"
+
+
+def test_save_dictionary_stale_sha_conflicts():
+    store = _seeded()
+    frame, _ = load_dictionary_frame(store)
+    with pytest.raises(ConflictError):
+        save_dictionary(store, frame, "stale", AUTHOR, "x")
+
+
+def test_append_entries_defaults_and_skip_existing():
+    store = _seeded()
+    result = append_entries(store, [ROW, {**ROW, "option_key": "옵션: A"}, {"product_no": "1", "option_key": "",
+                                                                           "vendor_id": "V1", "display_template": "Z"}],
+                            AUTHOR, DictionarySettings())
+    assert result.added == [("10", "옵션: A")] and result.skipped_existing == [("10", "옵션: A"), ("1", "")]
+    frame, sha = load_dictionary_frame(store)
+    assert sha == result.sha and len(frame) == 2
+    row = frame.iloc[1]
+    assert (row["channel"], row["enabled"], row["needs_review"], row["source"]) == ("naver", "1", "1", "manual")
+    assert row["updated_by"] == "t@example.com" and row["updated_at"].endswith("+09:00")
+
+
+def test_append_entries_creates_missing_file():
+    store = MemoryStore()
+    result = append_entries(store, [ROW], AUTHOR, DictionarySettings())
+    assert len(result.added) == 1 and len(load_dictionary_frame(store)[0]) == 1
+
+
+class _RacyStore:
+    """First write fails after another writer added an entry (simulated concurrent save)."""
+
+    def __init__(self, inner: MemoryStore, failures: int = 1) -> None:
+        self.inner = inner
+        self.failures = failures
+
+    def read_text(self, path):
+        return self.inner.read_text(path)
+
+    def history(self, path, limit=30):
+        return self.inner.history(path, limit)
+
+    def read_text_at(self, path, ref):
+        return self.inner.read_text_at(path, ref)
+
+    def write_text(self, path, content, expected_sha, message, author=None):
+        if self.failures > 0:
+            self.failures -= 1
+            append_entries(self.inner, [{**ROW, "product_no": "99"}], AUTHOR, DictionarySettings())
+            raise ConflictError("raced")
+        return self.inner.write_text(path, content, expected_sha, message, author)
+
+
+def test_append_entries_retries_and_keeps_both():
+    store = _RacyStore(_seeded())
+    result = append_entries(store, [ROW], AUTHOR, DictionarySettings())
+    keys = set(load_dictionary_frame(store.inner)[0]["product_no"])
+    assert keys == {"1", "10", "99"} and result.added == [("10", "옵션: A")]
+
+
+def test_append_entries_gives_up_after_retries():
+    store = _RacyStore(_seeded(), failures=10)
+    with pytest.raises(ConflictError):
+        append_entries(store, [{**ROW, "product_no": "5"}], AUTHOR, DictionarySettings(), max_retries=2)

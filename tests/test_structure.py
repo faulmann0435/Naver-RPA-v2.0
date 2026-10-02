@@ -7,10 +7,10 @@ ROOT = Path(__file__).resolve().parent.parent
 CORE_MODULES = [
     "core", "core.config_loader", "core.loader", "core.actions", "core.engine",
     "core.router", "core.merger", "core.exporter", "core.pipeline",
-    "core.option_key", "core.template", "core.dictionary",
+    "core.option_key", "core.template", "core.dictionary", "core.template_builder",
 ]
 STORE_MODULES = [
-    "store", "store.base", "store.memory_store", "store.github_store", "store.csv_codec", "store.rules_repo", "store.dictionary_repo",
+    "store", "store.base", "store.memory_store", "store.github_store", "store.csv_codec", "store.rules_repo", "store.dictionary_repo", "store.validators",
 ]
 
 
@@ -41,6 +41,9 @@ def test_store_does_not_import_streamlit():
     assert res.returncode == 0, res.stderr
 
 
-def test_app_exposes_main_and_load_config_local():
-    res = _run("import app; assert callable(app.main); assert hasattr(app, 'load_config_local'); assert callable(app.get_config)")
+def test_app_exposes_config_helpers_and_order_page():
+    res = _run(
+        "import app, ui.order_page; assert hasattr(app, 'load_config_local'); "
+        "assert callable(app.get_config); assert callable(ui.order_page.render)"
+    )
     assert res.returncode == 0, res.stderr
