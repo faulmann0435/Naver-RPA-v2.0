@@ -7,12 +7,16 @@ UI only; processing logic lives in the core/ package.
 """
 from pathlib import Path
 
+import requests
 import streamlit as st
 
 from core.config_loader import load_config
 from core.loader import HAS_MSOFFCRYPTO, load_excel, read_csv_with_encoding
 from core.merger import filter_instruction_rows
 from core.pipeline import process_all_data
+from store.base import StoreError
+from store.github_store import GitHubStore
+from store.rules_repo import load_config_from_store
 
 # ============== Config Loader (v14.3: load_config_local + cache) ==============
 
@@ -23,6 +27,43 @@ def load_config_local(config_path: str, _password: str | None = None, cache_key:
     cache_key: pass file mtime/size to invalidate cache when file changes.
     """
     return load_config(config_path, password=_password)
+
+
+@st.cache_data(ttl=60)
+def _load_config_from_data_store(repo: str, branch: str, config_path: str, cache_key: str) -> dict:
+    """Rules from the data repository; the token is read here and never passed as an argument."""
+    token = st.secrets["data_store"]["token"]
+    store = GitHubStore(repo=repo, branch=branch, token=token)
+    return load_config_from_store(store, config_path, password="1111")
+
+
+def _data_store_settings() -> tuple[str, str] | None:
+    """(repo, branch) from secrets, or None when no data store is configured."""
+    try:
+        if "data_store" not in st.secrets:
+            return None
+        section = st.secrets["data_store"]
+        return str(section["repo"]), str(section["branch"])
+    except Exception:  # noqa: BLE001  # no secrets file / missing keys
+        return None
+
+
+def get_config(config_path: str, cache_key: str) -> tuple[dict, str]:
+    """Load config from the data repository when configured, else from config.xlsx."""
+    settings = _data_store_settings()
+    if settings is not None:
+        repo, branch = settings
+        try:
+            config = _load_config_from_data_store(repo, branch, config_path, cache_key)
+            return config, f"데이터 저장소 ({repo}@{branch})"
+        # Connection failures, missing secrets keys and malformed rule files must not stop
+        # order processing: warn and fall back to the rules in config.xlsx.
+        except (StoreError, requests.RequestException, KeyError, ValueError) as e:
+            st.warning(
+                "데이터 저장소의 규칙을 불러올 수 없어 config.xlsx의 규칙으로 처리합니다. "
+                f"최신 규칙이 아닐 수 있습니다. (원인: {type(e).__name__}: {str(e)[:200]})"
+            )
+    return load_config_local(config_path, _password="1111", cache_key=cache_key), "config.xlsx"
 
 
 # ============== UI (v14.3: Session State) ==============
@@ -50,7 +91,7 @@ def main():
             st.info("config.xlsx를 앱과 같은 폴더에 두거나 경로를 확인하세요.")
             return
         cache_key = f"{path.stat().st_mtime}_{path.stat().st_size}"
-        config = load_config_local(config_path, _password="1111", cache_key=cache_key)
+        config, config_source = get_config(config_path, cache_key)
     except FileNotFoundError as e:
         st.error(str(e))
         return
@@ -60,7 +101,7 @@ def main():
 
     with st.sidebar:
         st.subheader("Config")
-        st.caption("Config loaded from config.xlsx")
+        st.caption(f"규칙 출처: {config_source}")
 
     uploaded_file = st.file_uploader("주문 파일 (.xlsx 또는 .csv)", type=["xlsx", "csv"], key="uploaded_file")
 

@@ -10,10 +10,10 @@ if HAS_MSOFFCRYPTO:
     import msoffcrypto
 
 
-def load_config(config_path: str, password: str | None = None) -> dict:
+def read_config_sheets(config_path: str, password: str | None = None) -> dict[str, pd.DataFrame]:
     """
-    Load config.xlsx with password support. Uses msoffcrypto if encrypted.
-    Returns: dict with keys ['ProductRoute', 'OptionRules', 'OutputLayout']
+    Read the three raw config sheets from config.xlsx (password support via msoffcrypto).
+    Returns: {"ProductRoute": df, "OptionRules": df, "OutputLayout": df} (not normalized).
     """
     path = Path(config_path).resolve()
     if not path.exists():
@@ -48,6 +48,18 @@ def load_config(config_path: str, password: str | None = None) -> dict:
     product_route = pd.read_excel(xl, sheet_name="ProductRoute")
     option_rules = pd.read_excel(xl, sheet_name="OptionRules")
     output_layout = pd.read_excel(xl, sheet_name="OutputLayout")
+
+    return {"ProductRoute": product_route, "OptionRules": option_rules, "OutputLayout": output_layout}
+
+
+def normalize_config(raw: dict[str, pd.DataFrame]) -> dict:
+    """
+    Normalize raw config sheets into the config dict used by the pipeline.
+    Returns: dict with keys ['ProductRoute', 'OptionRules', 'OutputLayout'] (+ two _debug_* keys).
+    """
+    product_route = raw["ProductRoute"]
+    option_rules = raw["OptionRules"]
+    output_layout = raw["OutputLayout"]
 
     _strip_columns(product_route)
     _strip_columns(option_rules)
@@ -168,3 +180,11 @@ def load_config(config_path: str, password: str | None = None) -> dict:
         "_debug_OptionRules_raw_headers": _debug_option_raw_headers,
         "_debug_OptionRules_renamed_headers": _debug_option_renamed_headers,
     }
+
+
+def load_config(config_path: str, password: str | None = None) -> dict:
+    """
+    Load config.xlsx with password support. Uses msoffcrypto if encrypted.
+    Returns: dict with keys ['ProductRoute', 'OptionRules', 'OutputLayout']
+    """
+    return normalize_config(read_config_sheets(config_path, password))

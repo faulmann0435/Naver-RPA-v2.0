@@ -3,3 +3,4 @@ openpyxl==3.1.5
 xlsxwriter==3.2.9
 streamlit==1.55.0
 msoffcrypto-tool>=5.0
+requests>=2.31

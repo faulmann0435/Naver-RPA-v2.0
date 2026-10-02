@@ -19,6 +19,13 @@ from core.actions import (
     _safe_int,
 )
 
+# ActionTypes handled by apply_option_rules below (others are silently skipped).
+IMPLEMENTED_ACTIONS: frozenset[str] = frozenset({
+    "CONVERT_WEIGHT", "REMOVE_TEXT", "REMOVE_REGEX", "REPLACE_REGEX_SUB", "MASK_TEXT",
+    "UNMASK_TEXT", "CALC_UNIT", "APPEND_QTY_UNIT", "GROUP_MULTIPLY", "APPEND_SUFFIX",
+    "PREPEND_TEXT", "FORMAT_QTY",
+})
+
 
 def apply_option_rules(row, option_rules, name_col="상품명", option_col="옵션정보", qty_col="수량", row_index=None, debug_log=None):
     current_vendor = str(row.get("_VendorID", "") or "").strip().upper()

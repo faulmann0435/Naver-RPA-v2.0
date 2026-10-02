@@ -96,9 +96,11 @@ class OutputFile:
     data: bytes
 
 
-def run_case(path: Path) -> list[OutputFile]:
+def run_case(path: Path, config: dict | None = None) -> list[OutputFile]:
+    """Run the pipeline; uses `config` when given, else loads config.xlsx."""
     load_config, load_excel, process_all_data = _entrypoints()
-    config = load_config(str(CONFIG_PATH))
+    if config is None:
+        config = load_config(str(CONFIG_PATH))
     df = load_excel(_Upload(path))
     results = process_all_data(df, config)
     return [
@@ -147,12 +149,12 @@ def load_manifest() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def compare_case(key: str, entry: dict) -> list[str]:
+def compare_case(key: str, entry: dict, config: dict | None = None) -> list[str]:
     """Return a list of human-readable differences (empty = identical)."""
     path = sample_dir() / entry["input"]
     if not path.exists():
         return [f"input missing: {path}"]
-    actual = {o.name: o for o in run_case(path)}
+    actual = {o.name: o for o in run_case(path, config)}
     expected = set(entry["files"])
     problems = []
     if set(actual) != expected:
