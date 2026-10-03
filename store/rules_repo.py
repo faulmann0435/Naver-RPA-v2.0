@@ -10,6 +10,7 @@ from core.config_loader import normalize_config, read_config_sheets
 from core.engine import IMPLEMENTED_ACTIONS
 from store.base import DataStore, StoreError
 from store.csv_codec import from_csv_text, to_csv_text
+from store.layout_repo import load_layout
 
 PRODUCT_ROUTE_FILE = "product_route.csv"
 OPTION_RULES_FILE = "option_rules.csv"
@@ -126,8 +127,10 @@ def load_rules(store: DataStore) -> RulesSnapshot:
 
 
 def load_config_from_store(store: DataStore, config_path: str, password: str | None = None) -> dict:
-    """Same result shape as load_config, with rules from the store and OutputLayout from config.xlsx."""
-    layout = read_config_sheets(config_path, password)["OutputLayout"]
+    """Same result shape as load_config: rules from the store, OutputLayout from the store's
+    output_layout.csv when it exists (else from config.xlsx, i.e. before the layout migration)."""
+    snapshot = load_layout(store)
+    layout = snapshot.raw if snapshot is not None else read_config_sheets(config_path, password)["OutputLayout"]
     rules = load_rules(store)
     return normalize_config(
         {
