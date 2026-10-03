@@ -11,6 +11,7 @@ from store.layout_repo import OUTPUT_LAYOUT_FILE
 from ui import context, layout_state
 from ui.layout_logic import (
     BLANK_LABEL,
+    NEW_COLUMN_LABEL,
     RID,
     V_DELETE,
     V_FIXED,
@@ -20,10 +21,13 @@ from ui.layout_logic import (
     Judgement,
     build_view,
     check_new_form,
+    column_choices,
+    fixed_options,
     form_filename,
     form_names,
     judge,
     preview_table,
+    set_one_column,
     source_options,
     summary_message,
     used_sources,
@@ -32,8 +36,11 @@ from ui.layout_state import LayoutData
 
 HELP = (
     "'순서'는 엑셀 파일에서 왼쪽부터 몇 번째 칸인지를 뜻합니다. 저장하면 열(A, B, C…)이 순서대로 다시 매겨집니다. "
-    "'고정 글자'를 적으면 모든 줄에 그 글자가 들어가고(넣을 내용보다 우선), 비워 두면 '넣을 내용'이 들어갑니다."
+    "'고정 글자'를 적으면 모든 줄에 그 글자가 들어가고(넣을 내용보다 우선), 비워 두면 '넣을 내용'이 들어갑니다. "
+    "표 안에서는 한글이 잘 입력되지 않으니, 한글 칸 이름이나 새 고정 글자는 표 아래 '칸 하나 추가·고치기'에서 넣으세요."
 )
+DIRECT_INPUT = "✏️ 직접 입력"
+NO_FIXED = "(없음)"
 S_FORM = "layout_w_form"
 
 
@@ -114,36 +121,92 @@ def _delete_panel(store: DataStore, data: LayoutData, form: str, view0: pd.DataF
 
 # ---------------------------------------------------------------- grid
 
-def _grid(data: LayoutData, form: str, columns: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(frozen rows the editor was opened with, the editor's current result).
+def _frozen(data: LayoutData, form: str) -> dict:
+    """The rows the editor was opened with (view0) and the rows it currently starts from (base).
 
-    The opened rows stay frozen while the page reruns, so edits made in the grid are not replayed
-    onto changing data; a reload, a save or another form gives a fresh editor.
+    view0 stays frozen while the page reruns, so edits made in the grid are not replayed onto changing
+    data; a reload, a save or another form gives a fresh editor. The input box under the grid changes
+    `base` and bumps `nonce`, which gives a fresh editor that starts from the changed rows.
     """
     version = st.session_state[layout_state.S_VERSION]
     frozen = st.session_state.get(layout_state.S_FROZEN)
     if frozen is None or frozen["sig"] != (version, form):
-        frozen = {"sig": (version, form), "view0": build_view(data.table, form)}
+        view0 = build_view(data.table, form)
+        frozen = {"sig": (version, form), "view0": view0, "base": view0, "nonce": 0}
         st.session_state[layout_state.S_FROZEN] = frozen
+    return frozen
+
+
+def _grid(data: LayoutData, form: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(frozen rows the editor was opened with, the editor's current result)."""
+    frozen = _frozen(data, form)
+    version, nonce = st.session_state[layout_state.S_VERSION], frozen["nonce"]
+    key = f"layout_w_grid_{version}_{form}" + (f"_{nonce}" if nonce else "")
     edited = st.data_editor(
-        frozen["view0"], key=f"layout_w_grid_{version}_{form}", num_rows="dynamic", hide_index=True,
-        column_config=columns, width="stretch",
+        frozen["base"], key=key, num_rows="dynamic", hide_index=True,
+        column_config=_column_config(data, frozen["base"]), width="stretch",
     )
     return frozen["view0"], edited
 
 
-def _column_config(data: LayoutData) -> dict:
+def _column_config(data: LayoutData, base: pd.DataFrame) -> dict:
     return {
         RID: None,
         V_ORDER: st.column_config.NumberColumn("순서", step=1, format="%d", help="왼쪽에서 몇 번째 칸인지"),
-        V_NAME: st.column_config.TextColumn("칸 이름", help="엑셀 첫 줄에 적히는 이름"),
+        V_NAME: st.column_config.TextColumn("칸 이름", help="엑셀 첫 줄에 적히는 이름 (한글은 표 아래 입력란에서)"),
         V_SOURCE: st.column_config.SelectboxColumn(
             "넣을 내용", options=source_options(used_sources(data.table)), default=BLANK_LABEL,
             help="주문 데이터에서 가져올 내용 (고정 글자가 있으면 무시됨)",
         ),
-        V_FIXED: st.column_config.TextColumn("고정 글자", help="적으면 모든 줄에 이 글자가 들어갑니다"),
+        V_FIXED: st.column_config.SelectboxColumn(
+            "고정 글자", options=fixed_options(data.table, base), default="",
+            help="고르면 모든 줄에 이 글자가 들어갑니다. 목록에 없는 글자는 표 아래 입력란에서 직접 입력",
+        ),
         V_DELETE: st.column_config.CheckboxColumn("삭제", default=False),
     }
+
+
+def _text(value: object) -> str:
+    return "" if value is None or pd.isna(value) else str(value).strip()
+
+
+def _one_column_box(data: LayoutData, form: str, edited: pd.DataFrame) -> None:
+    """Add or change one column with normal input boxes (Korean works here, unlike in the grid)."""
+    frozen = _frozen(data, form)
+    with st.expander("칸 하나 추가·고치기 (한글 입력은 여기서)", expanded=False):
+        choices = column_choices(edited)
+        target = st.selectbox("어느 칸?", choices, key=f"layout_w_one_target_{form}")
+        index = None if target == NEW_COLUMN_LABEL else choices.index(target) - 1
+        row = None if index is None else edited.iloc[index]
+        suffix = f"{frozen['nonce']}_{form}_{target}"
+        name = st.text_input("칸 이름", value="" if row is None else _text(row[V_NAME]), key=f"layout_w_one_name_{suffix}")
+        sources = source_options(used_sources(data.table))
+        current_source = (_text(row[V_SOURCE]) if row is not None else "") or BLANK_LABEL
+        source = st.selectbox(
+            "넣을 내용", sources, index=sources.index(current_source) if current_source in sources else 0,
+            key=f"layout_w_one_source_{suffix}",
+        )
+        fixed = _fixed_input(data, edited, "" if row is None else _text(row[V_FIXED]), suffix)
+        if st.button("표에 반영", key=f"layout_w_one_apply_{form}"):
+            if not name.strip():
+                st.error("칸 이름을 입력하세요.")
+                return
+            frozen["base"] = set_one_column(edited, index, name, source, fixed)
+            frozen["nonce"] += 1
+            st.rerun()
+        st.caption("'표에 반영'을 눌러도 아직 저장되지 않습니다. 표와 미리보기를 확인한 뒤 '저장'을 누르세요.")
+
+
+def _fixed_input(data: LayoutData, edited: pd.DataFrame, current: str, suffix: str) -> str:
+    """고정 글자: pick one already used, or type a new one."""
+    presets = [v for v in fixed_options(data.table, edited) if v]
+    choices = [NO_FIXED, *presets, DIRECT_INPUT]
+    start = choices.index(current) if current in presets else (0 if not current else len(choices) - 1)
+    picked = st.selectbox("고정 글자", choices, index=start, key=f"layout_w_one_fixed_{suffix}",
+                          help="고르면 모든 줄에 이 글자가 들어갑니다 (넣을 내용보다 우선)")
+    if picked == DIRECT_INPUT:
+        return st.text_input("고정 글자 직접 입력", value=current, key=f"layout_w_one_fixed_text_{suffix}")
+    return "" if picked == NO_FIXED else picked
 
 
 def _preview(edited: pd.DataFrame) -> None:
@@ -191,7 +254,8 @@ def _edit_form(store: DataStore, data: LayoutData, form: str) -> None:
     default = _pending()[form] if is_new else form_filename(data.table, form)
     filename = st.text_input("파일 이름", value=default, key=f"layout_w_file_{st.session_state[layout_state.S_VERSION]}_{form}")
     st.caption(HELP)
-    view0, edited = _grid(data, form, _column_config(data))
+    view0, edited = _grid(data, form)
+    _one_column_box(data, form, edited)
     _preview(edited)
     judged = judge(
         data.table, data.text, form, filename, view0, edited, data.refs, data.route_csv, data.options_csv,

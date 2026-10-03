@@ -12,6 +12,7 @@ from tests.regression_harness import CONFIG_PATH
 from ui.layout_logic import (
     BLANK_LABEL,
     KNOWN_SOURCES,
+    NEW_COLUMN_LABEL,
     SOURCE_LABELS,
     V_DELETE,
     V_FIXED,
@@ -21,13 +22,16 @@ from ui.layout_logic import (
     apply_edit,
     build_view,
     check_new_form,
+    column_choices,
     column_letters,
     delete_form,
+    fixed_options,
     form_filename,
     form_names,
     judge,
     preview_table,
     read_layout_table,
+    set_one_column,
     source_label,
     source_options,
     source_value,
@@ -261,3 +265,38 @@ def test_judge_final_guard_when_layout_would_be_empty():
     view0 = build_view(table, "A")
     result = judge(table, only, "A", "f", view0, view0.iloc[0:0], LayoutReferences(), ROUTE, OPTIONS, USER, NOW)
     assert any("처리할 수 없습니다" in e for e in result.errors)
+
+
+def test_fixed_options_offer_used_texts_most_used_first(table):
+    grid = build_view(table, FORM)
+    options = fixed_options(table, grid)
+    assert options[0] == "" and "최고다농수산" in options and "033-636-0357" in options
+    assert len(options) == len(set(options))
+    grid.at[0, V_FIXED] = "새 고정 글자"
+    assert "새 고정 글자" in fixed_options(table, grid)
+
+
+def test_column_choices_put_new_first_then_numbered_rows(table):
+    grid = build_view(table, FORM)
+    choices = column_choices(grid)
+    assert choices[0] == NEW_COLUMN_LABEL and len(choices) == len(grid) + 1
+    assert choices[1] == f"1. {grid.at[0, V_NAME]}"
+
+
+def test_set_one_column_changes_a_copy_and_saves_korean(table, text):
+    grid = build_view(table, FORM)
+    changed = set_one_column(grid, 1, " 받는분 성명 ", SOURCE_LABELS["수취인명"], "")
+    assert grid.at[1, V_NAME] != "받는분 성명"  # original untouched
+    assert changed.at[1, V_NAME] == "받는분 성명"
+    result = edit(table, text, changed)
+    assert result.modified == 1 and "받는분 성명" in result.text
+
+
+def test_set_one_column_appends_a_new_last_column(table, text):
+    grid = build_view(table, FORM)
+    changed = set_one_column(grid, None, "보내는분", BLANK_LABEL, "최고다농수산")
+    assert len(changed) == len(grid) + 1 and changed.iloc[-1][V_ORDER] == len(grid) + 1
+    result = edit(table, text, changed)
+    assert result.added == 1
+    last = block_of(result).iloc[-1]
+    assert last["헤더명"] == "보내는분" and last["고정값(Hardcoded)"] == "최고다농수산"

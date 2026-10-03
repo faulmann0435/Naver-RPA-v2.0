@@ -207,3 +207,35 @@ def test_layout_history_diff_and_revert():
     assert not page.exception and not page.error
     assert store.read_text(OUTPUT_LAYOUT_FILE).content == original
     assert store.history(OUTPUT_LAYOUT_FILE)[0].message.startswith("되돌리기: 발주서 양식 → ")
+
+
+def test_one_column_box_adds_korean_column_with_typed_fixed_text_then_saves():
+    store = _layout_store()
+    at = _select_form(_run(_layout_page, store), FORM)
+    suffix = f"0_{FORM}_➕ 새 칸 추가"
+    at.text_input(key=f"layout_w_one_name_{suffix}").set_value("보내는분성명")
+    at.selectbox(key=f"layout_w_one_fixed_{suffix}").set_value("✏️ 직접 입력").run()
+    at.text_input(key=f"layout_w_one_fixed_text_{suffix}").set_value("최고다 직접")
+    at.button(key=f"layout_w_one_apply_{FORM}").click().run()
+    assert not at.exception and not at.error
+    assert at.session_state["layout_frozen"]["nonce"] == 1
+    assert not at.button(key="layout_w_save").disabled
+    at.button(key="layout_w_save").click().run()
+    assert not at.exception
+    rows = from_csv_text(store.read_text(OUTPUT_LAYOUT_FILE).content, as_text=True)
+    added = rows[(rows["양식명칭"] == FORM) & (rows["헤더명"] == "보내는분성명")]
+    assert added["고정값(Hardcoded)"].tolist() == ["최고다 직접"]
+
+
+def test_one_column_box_picks_a_preset_fixed_text_for_an_existing_column():
+    store = _layout_store()
+    at = _select_form(_run(_layout_page, store), FORM)
+    target = at.selectbox(key=f"layout_w_one_target_{FORM}").options[2]
+    at.selectbox(key=f"layout_w_one_target_{FORM}").set_value(target).run()
+    suffix = f"0_{FORM}_{target}"
+    at.selectbox(key=f"layout_w_one_source_{suffix}").set_value("(빈칸)")
+    at.selectbox(key=f"layout_w_one_fixed_{suffix}").set_value("033-636-0357")
+    at.button(key=f"layout_w_one_apply_{FORM}").click().run()
+    assert not at.exception and not at.error
+    base = at.session_state["layout_frozen"]["base"]
+    assert base.iloc[1]["고정 글자"] == "033-636-0357"

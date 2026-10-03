@@ -213,6 +213,48 @@ def final_order(rows: Sequence[GridRow]) -> list[GridRow]:
     return [row for _, row in indexed]
 
 
+NEW_COLUMN_LABEL = "➕ 새 칸 추가"
+
+
+def fixed_options(table: pd.DataFrame, grid: pd.DataFrame) -> list[str]:
+    """Fixed texts offered for picking: "" first, then every one used in any form or in the grid (most used first)."""
+    values = [_s(v) for v in table[FIXED]] + [_s(v) for v in grid[V_FIXED]]
+    counts: dict[str, int] = {}
+    for value in values:
+        if value:
+            counts[value] = counts.get(value, 0) + 1
+    return ["", *sorted(counts, key=lambda v: -counts[v])]
+
+
+def column_choices(grid: pd.DataFrame) -> list[str]:
+    """Rows of the grid offered for editing one at a time ("3. 받는분성명"), plus adding a new one first."""
+    labels = [f"{i}. {_s(name) or '(이름 없음)'}" for i, name in enumerate(grid[V_NAME], start=1)]
+    return [NEW_COLUMN_LABEL, *labels]
+
+
+def set_one_column(grid: pd.DataFrame, index: int | None, name: str, source_label: str, fixed: str) -> pd.DataFrame:
+    """A copy of the grid with row `index` (0-based) changed, or a new row appended at the end when None.
+
+    Used by the input box under the grid, where Korean can be typed (the grid's own cells break IME input).
+    """
+    if index is None:
+        orders = [o for o in (_order_number(v) for v in grid[V_ORDER]) if o is not None]
+        new_row = pd.DataFrame({
+            RID: pd.Series([pd.NA], dtype="Int64"),
+            V_ORDER: pd.Series([max(orders, default=0) + 1], dtype="Int64"),
+            V_NAME: pd.Series([name.strip()], dtype=object),
+            V_SOURCE: pd.Series([source_label], dtype=object),
+            V_FIXED: pd.Series([fixed.strip()], dtype=object),
+            V_DELETE: pd.Series([False], dtype=bool),
+        })
+        return pd.concat([grid, new_row], ignore_index=True)
+    changed = grid.copy()
+    changed.at[index, V_NAME] = name.strip()
+    changed.at[index, V_SOURCE] = source_label
+    changed.at[index, V_FIXED] = fixed.strip()
+    return changed
+
+
 def preview_table(grid: pd.DataFrame) -> pd.DataFrame:
     """Header row in final order + one example row (fixed text / "(label)" / blank). Empty headers are not exported."""
     headers: list[str] = []
