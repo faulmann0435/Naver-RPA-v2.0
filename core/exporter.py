@@ -10,11 +10,29 @@ except ImportError:
     xl_col_to_name = None
 
 
+def excel_column_number(value) -> int | None:
+    """Excel column letters as a number (A=1 ... Z=26, AA=27); None when it is not a letter code."""
+    text = str(value).strip().upper() if pd.notna(value) else ""
+    if not text or not (text.isascii() and text.isalpha()):
+        return None
+    number = 0
+    for char in text:
+        number = number * 26 + (ord(char) - ord("A") + 1)
+    return number
+
+
+def _sort_by_excel_column(layout):
+    """Stable order by column letter value (so AA comes after Z); non-letter values last."""
+    keys = [excel_column_number(v) for v in layout["ExcelCol"]]
+    order = sorted(range(len(keys)), key=lambda i: (keys[i] is None, keys[i] or 0))
+    return layout.iloc[order].reset_index(drop=True)
+
+
 def build_output_dataframe(merged_df, output_layout, vendor_id):
     layout = output_layout[output_layout["VendorID"].astype(str).str.strip() == str(vendor_id).strip()]
     if layout.empty:
         return None
-    layout = layout.sort_values("ExcelCol").reset_index(drop=True)
+    layout = _sort_by_excel_column(layout)
     row_count = len(merged_df)
     out = {}
     for _, r in layout.iterrows():
