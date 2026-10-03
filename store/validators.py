@@ -22,7 +22,7 @@ COLUMN_LABELS: dict[str, str] = {
     "unit_weight_kg": "1개당 무게(kg)",
     "append_to_end": "묶음 끝에 붙임",
 }
-NO_QTY_WARNING = "수량 칸이 없습니다. 2개 이상 주문 시 (xN)이 자동으로 붙습니다"
+NO_QTY_WARNING = "문장에 수량 숫자가 없습니다. 2개 이상 주문이면 끝에 (x2)처럼 붙습니다"
 _PLACEHOLDER = re.compile(r"\{[^{}]*\}")
 
 
