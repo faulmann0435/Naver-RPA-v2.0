@@ -128,7 +128,7 @@ def used_sources(table: pd.DataFrame) -> list[str]:
 
 # ---------------------------------------------------------------- view and grid
 
-def _column_order(table: pd.DataFrame, positions: Sequence[int]) -> list[int]:
+def column_order(table: pd.DataFrame, positions: Sequence[int]) -> list[int]:
     """Positions of a form ordered by the column letter (stable; unreadable letters last)."""
     keys = {p: excel_column_number(_s(table.at[p, COLUMN])) for p in positions}
     return sorted(positions, key=lambda p: (keys[p] is None, keys[p] or 0))
@@ -136,15 +136,39 @@ def _column_order(table: pd.DataFrame, positions: Sequence[int]) -> list[int]:
 
 def build_view(table: pd.DataFrame, form: str) -> pd.DataFrame:
     """The rows shown in the editor: `_rid` (row position, hidden), 순서 1..n, 칸 이름, 넣을 내용, 고정 글자, 삭제."""
-    ordered = _column_order(table, form_positions(table, form))
+    ordered = column_order(table, form_positions(table, form))
     return pd.DataFrame({
         RID: pd.Series(ordered, dtype="Int64"),
         V_ORDER: pd.Series(range(1, len(ordered) + 1), dtype="Int64"),
-        V_NAME: [_s(table.at[p, HEADER]) for p in ordered],
-        V_SOURCE: [source_label(_s(table.at[p, SOURCE])) for p in ordered],
-        V_FIXED: [_s(table.at[p, FIXED]) for p in ordered],
-        V_DELETE: [False] * len(ordered),
+        V_NAME: pd.Series([_s(table.at[p, HEADER]) for p in ordered], dtype=object),
+        V_SOURCE: pd.Series([source_label(_s(table.at[p, SOURCE])) for p in ordered], dtype=object),
+        V_FIXED: pd.Series([_s(table.at[p, FIXED]) for p in ordered], dtype=object),
+        V_DELETE: pd.Series([False] * len(ordered), dtype=bool),
     })
+
+
+@dataclass(frozen=True)
+class ColumnRecord:
+    """One output column of a form as stored (used to compare two versions of the file)."""
+
+    index: int  # 1-based left-to-right position within the form
+    source: str
+    fixed: str
+    filename: str
+
+
+def column_records(table: pd.DataFrame) -> dict[tuple[str, str, int], ColumnRecord]:
+    """(form, header, n-th time this header appears in the form) -> record, for every form of the table."""
+    records: dict[tuple[str, str, int], ColumnRecord] = {}
+    for form in form_names(table):
+        seen: dict[str, int] = {}
+        for index, p in enumerate(column_order(table, form_positions(table, form)), start=1):
+            header = _s(table.at[p, HEADER])
+            seen[header] = seen.get(header, 0) + 1
+            records[(form, header, seen[header])] = ColumnRecord(
+                index, _s(table.at[p, SOURCE]), _s(table.at[p, FIXED]), _s(table.at[p, FILENAME])
+            )
+    return records
 
 
 @dataclass(frozen=True)

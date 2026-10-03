@@ -12,6 +12,12 @@ from core.dictionary import DictionarySettings
 from store.base import Author, DataStore, Revision, StoreError
 from store.csv_codec import BOM, from_csv_text
 from store.dictionary_repo import KST, empty_frame, entry_key
+from store.layout_repo import OUTPUT_LAYOUT_FILE
+from store.layout_validators import (
+    LayoutReferences,
+    layout_final_guard,
+    validate_layout,
+)
 from store.rules_repo import (
     DICTIONARY_COLUMNS,
     DICTIONARY_FILE,
@@ -26,6 +32,12 @@ from store.rules_validators import (
 )
 from store.validators import validate_dictionary
 from ui.dictionary_logic import describe_issue, field_differences
+from ui.layout_logic import (
+    ColumnRecord,
+    column_records,
+    read_layout_table,
+    source_label,
+)
 from ui.rules_extra_logic import SETTING_LABELS, parse_settings, settings_values
 from ui.rules_logic import (
     CHANNEL,
@@ -41,11 +53,13 @@ from ui.rules_logic import (
 
 TARGETS: dict[str, str] = {
     "품목 사전": DICTIONARY_FILE, "상품분류": PRODUCT_ROUTE_FILE, "옵션규칙": OPTION_RULES_FILE, "설정": SETTINGS_FILE,
+    "발주서 양식": OUTPUT_LAYOUT_FILE,
 }
 REVIVES, VANISHES = "되돌리면 다시 생김", "되돌리면 사라짐"
 DICT_DIFF_COLUMNS = ["구분", "상품명", "옵션", "변경 내용"]
 RULE_DIFF_COLUMNS = ["구분", "규칙"]
 SETTING_DIFF_COLUMNS = ["항목", "선택한 버전", "현재"]
+LAYOUT_DIFF_COLUMNS = ["구분", "양식", "칸 이름", "변경 내용"]
 NO_REVISIONS = "이력이 없습니다."
 
 
@@ -182,7 +196,43 @@ def diff_settings(old_text: str, current_text: str) -> DiffResult:
     return DiffResult(pd.DataFrame(rows, columns=SETTING_DIFF_COLUMNS))
 
 
+def _what_changed(old: ColumnRecord, now: ColumnRecord) -> list[str]:
+    """Differences of one column between the selected version and the current file."""
+    changes: list[str] = []
+    if old.source != now.source:
+        changes.append(f"넣을 내용: {source_label(old.source)} → {source_label(now.source)}")
+    if old.fixed != now.fixed:
+        changes.append(f"고정 글자: '{old.fixed}' → '{now.fixed}'")
+    if old.filename != now.filename:
+        changes.append(f"파일명: '{old.filename}' → '{now.filename}'")
+    return changes
+
+
+def diff_layout(old_text: str, current_text: str) -> DiffResult:
+    """Per form and column name: 추가 (only now) / 삭제 (only before) / 변경 (넣을 내용, 고정 글자, 파일명, 순서).
+    The order is compared among the columns both versions have, so deleting one column is not reported for the rest."""
+    old, now = column_records(read_layout_table(old_text)), column_records(read_layout_table(current_text))
+    common = [k for k in now if k in old]
+    old_rank = {k: i for i, k in enumerate(sorted(common, key=lambda k: (k[0], old[k].index)))}
+    now_rank = {k: i for i, k in enumerate(sorted(common, key=lambda k: (k[0], now[k].index)))}
+    rows: list[list[str]] = []
+    for key, record in now.items():
+        if key not in old:
+            rows.append(["추가", key[0], key[1], f"이 버전 이후에 추가됨 ({VANISHES})"])
+            continue
+        changes = _what_changed(old[key], record)
+        before = [k for k in common if k[0] == key[0] and old_rank[k] < old_rank[key]]
+        if [k for k in before if now_rank[k] > now_rank[key]]:
+            changes.append("순서가 바뀜")
+        if changes:
+            rows.append(["변경", key[0], key[1], " / ".join(changes)])
+    rows += [["삭제", k[0], k[1], f"이 버전 이후에 삭제됨 ({REVIVES})"] for k in old if k not in now]
+    return DiffResult(pd.DataFrame(rows, columns=LAYOUT_DIFF_COLUMNS))
+
+
 def diff_against_current(path: str, old_text: str, current_text: str, settings: DictionarySettings) -> DiffResult:
+    if path == OUTPUT_LAYOUT_FILE:
+        return diff_layout(old_text, current_text)
     if path == DICTIONARY_FILE:
         return diff_dictionary(old_text, current_text, settings)
     if path == PRODUCT_ROUTE_FILE:
@@ -228,6 +278,19 @@ def revert_errors(
     except ValueError as e:
         return [f"설정 파일을 읽을 수 없습니다. ({e})"]
     return []
+
+
+def layout_revert_errors(
+    old_text: str, current_text: str, route_csv: str, options_csv: str, refs: LayoutReferences
+) -> list[str]:
+    """Why an old output_layout.csv must not be restored: the save errors (e.g. a form still used by
+    rules or the dictionary would vanish) and the final guard. Empty list = safe to revert."""
+    try:
+        old, current = read_layout_table(old_text), read_layout_table(current_text)
+    except (ValueError, KeyError) as e:
+        return [f"이 버전의 파일 형식을 읽을 수 없습니다. ({e})"]
+    issues = validate_layout(old, current, refs) + layout_final_guard(route_csv, options_csv, old_text)
+    return [i.message for i in issues if i.level == "error"]
 
 
 def revert_message(path: str, rev: Revision) -> str:

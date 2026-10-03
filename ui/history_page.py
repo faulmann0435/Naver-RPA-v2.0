@@ -6,13 +6,16 @@ import streamlit as st
 
 from store.base import ConflictError, DataStore, Revision, StoreError
 from store.dictionary_repo import load_settings
-from store.rules_repo import OPTION_RULES_FILE, PRODUCT_ROUTE_FILE
-from ui import context, dictionary_page, rules_state
+from store.layout_repo import OUTPUT_LAYOUT_FILE
+from store.layout_validators import collect_references
+from store.rules_repo import DICTIONARY_FILE, OPTION_RULES_FILE, PRODUCT_ROUTE_FILE
+from ui import context, dictionary_page, layout_state, rules_state
 from ui.history_logic import (
     TARGETS,
     diff_against_current,
     file_label,
     history_table,
+    layout_revert_errors,
     old_content,
     revert_errors,
     revert_file,
@@ -29,9 +32,23 @@ def _other_rules(store: DataStore, path: str) -> str:
     return snapshot.content if snapshot else ""
 
 
+def _text_of(store: DataStore, path: str) -> str:
+    snapshot = store.read_text(path)
+    return snapshot.content if snapshot else ""
+
+
+def _revert_errors(store: DataStore, path: str, old: str, current: str, config: dict, settings) -> list[str]:
+    if path == OUTPUT_LAYOUT_FILE:
+        route, options = _text_of(store, PRODUCT_ROUTE_FILE), _text_of(store, OPTION_RULES_FILE)
+        refs = collect_references(route, options, _text_of(store, DICTIONARY_FILE))
+        return layout_revert_errors(old, current, route, options, refs)
+    return revert_errors(path, old, context.vendor_ids(config), settings, _other_rules(store, path), context.load_raw_layout())
+
+
 def _forget_loaded_pages() -> None:
     st.session_state.pop(dictionary_page.S_BASE, None)
     rules_state.forget_loaded()
+    layout_state.forget_loaded()
 
 
 def _revert(store: DataStore, path: str, rev: Revision, sha: str | None) -> None:
@@ -104,7 +121,7 @@ def render() -> None:
             st.dataframe(diff.table, hide_index=True, width="stretch")
         if diff.note:
             st.info(diff.note)
-    errors = revert_errors(path, old, context.vendor_ids(config), settings, _other_rules(store, path), context.load_raw_layout())
+    errors = _revert_errors(store, path, old, current.content, config, settings)
     for line in errors:
         st.error(f"이 버전으로는 되돌릴 수 없습니다: {line}")
     st.caption("되돌려도 이력은 지워지지 않고, 옛 내용이 '새 버전'으로 하나 더 쌓입니다. 언제든 다시 되돌릴 수 있습니다.")
