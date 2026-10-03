@@ -96,7 +96,7 @@ def _message(filename: str) -> str:
     return f"chore(data): migrate {filename} from config.xlsx"
 
 
-def _load_store(branch_override: str | None) -> GitHubStore:
+def load_store(branch_override: str | None) -> GitHubStore:
     with SECRETS_PATH.open("rb") as f:
         section = tomllib.load(f)["data_store"]
     return GitHubStore(
@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     print("round trip check: OK")
 
     try:
-        store = _load_store(args.branch)
+        store = load_store(args.branch)
     except (OSError, KeyError, tomllib.TOMLDecodeError) as e:
         print(f"ABORT: cannot read [data_store] from {SECRETS_PATH.name}: {type(e).__name__}")
         return 1
