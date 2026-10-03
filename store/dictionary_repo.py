@@ -103,7 +103,7 @@ def _new_row(row: dict, author: Author, now: str, settings: DictionarySettings) 
     product_no, option_key = entry_key(row.get("product_no"), row.get("option_key"), settings)
     base.update(
         product_no=product_no, option_key=option_key, channel="naver", enabled="1", needs_review="1",
-        source="manual", updated_at=now, updated_by=author.email, last_seen_at="",
+        source="manual", updated_at=now, updated_by=author.name, last_seen_at="",
     )
     if not base["append_to_end"]:
         base["append_to_end"] = "0"

@@ -8,7 +8,7 @@ import requests
 import streamlit as st
 
 from core.config_loader import load_config, read_config_sheets
-from core.dictionary import DictionarySettings, ItemDictionary
+from core.dictionary import DEFAULT_WORKERS, DictionarySettings, ItemDictionary
 from store.base import Author, DataStore, StoreError
 from store.dictionary_repo import empty_frame, load_dictionary_frame, load_state
 from store.github_store import GitHubStore
@@ -16,8 +16,9 @@ from store.rules_repo import load_config_from_store
 
 CONFIG_PATH = str(Path(__file__).resolve().parent.parent / "config.xlsx")
 CONFIG_PASSWORD = "1111"
-DEFAULT_USER = "faulmann0435@gmail.com"
-USER_KEY = "worker_email"
+WORKER_KEY = "worker_name"
+WORKER_PARAM = "worker"
+AUTHOR_EMAIL = "app@naver-rpa.local"
 TEST_STORE_KEY = "_test_store"
 CACHE_SECONDS = 60
 
@@ -26,21 +27,40 @@ DictionaryState = tuple[ItemDictionary, DictionarySettings, str | None]
 
 # ---------------------------------------------------------------- identity
 
-def current_user(show_widget: bool = False) -> str:
-    """The worker's identity (e-mail). The ONLY place that knows who is working.
+def worker_names() -> tuple[str, ...]:
+    """Worker names from settings.json; the default list when there is no store or it fails."""
+    try:
+        return load_dictionary_state()[1].workers
+    except (StoreError, requests.RequestException, KeyError, ValueError):
+        return DEFAULT_WORKERS
 
-    Temporary: a sidebar text box. The login step replaces just this function.
+
+def _store_worker_choice() -> None:
+    st.query_params[WORKER_PARAM] = str(st.session_state[WORKER_KEY])
+
+
+def _worker_picker(workers: tuple[str, ...]) -> None:
+    if st.session_state.get(WORKER_KEY) not in workers:
+        saved = st.query_params.get(WORKER_PARAM)
+        st.session_state[WORKER_KEY] = saved if saved in workers else workers[0]
+    st.sidebar.selectbox("작업자", workers, key=WORKER_KEY, on_change=_store_worker_choice)
+    st.sidebar.caption("저장할 때 이 이름이 변경 이력에 남습니다")
+
+
+def current_user(show_widget: bool = False) -> str:
+    """The worker's name. The ONLY place that knows who is working.
+
+    The app cannot know who is logged in, so the worker picks their name in the sidebar.
     """
+    workers = worker_names()
     if show_widget:
-        st.sidebar.text_input("작업자 (임시)", value=DEFAULT_USER, key=USER_KEY)
-        st.sidebar.caption("로그인 기능은 배포 전에 추가됩니다")
-    value = str(st.session_state.get(USER_KEY, DEFAULT_USER)).strip()
-    return value or DEFAULT_USER
+        _worker_picker(workers)
+    chosen = st.session_state.get(WORKER_KEY)
+    return str(chosen) if chosen in workers else workers[0]
 
 
 def current_author() -> Author:
-    user = current_user()
-    return Author(name=user, email=user)
+    return Author(name=current_user(), email=AUTHOR_EMAIL)
 
 
 # ---------------------------------------------------------------- data store

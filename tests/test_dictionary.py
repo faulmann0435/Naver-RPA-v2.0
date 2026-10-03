@@ -1,6 +1,7 @@
 import pandas as pd
 
 from core.dictionary import (
+    DEFAULT_WORKERS,
     DictionaryEntry,
     DictionarySettings,
     ItemDictionary,
@@ -95,3 +96,13 @@ def test_render_entry():
     assert render_entry(_entry("깐멍게 500gx{수량}개"), 1) == "깐멍게 500gx1개"
     assert render_entry(_entry("깐멍게 500g"), 2) == "깐멍게 500g (x2)"
     assert render_entry(_entry("깐멍게 500g"), 1) == "깐멍게 500g"
+
+
+def test_workers_parsing():
+    assert DictionarySettings.from_json_text("{}").workers == DEFAULT_WORKERS
+    assert DictionarySettings().workers == ("사장님", "사장님을노리는님", "개발자")
+    parsed = DictionarySettings.from_json_text('{"workers": [" 가 ", "", "나", "가", "  ", "다"]}')
+    assert parsed.workers == ("가", "나", "다")
+    assert DictionarySettings.from_json_text('{"workers": ["", " "]}').workers == DEFAULT_WORKERS
+    assert DictionarySettings.from_json_text('{"workers": []}').workers == DEFAULT_WORKERS
+    assert DictionarySettings.from_json_text('{"workers": "x"}').workers == DEFAULT_WORKERS

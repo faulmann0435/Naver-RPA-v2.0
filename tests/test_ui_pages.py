@@ -106,8 +106,8 @@ def test_save_changes_store_and_records_author():
     assert not at.exception and not at.error
     frame, sha = load_dictionary_frame(store)
     assert sha != before and frame.loc[0, "display_template"] == "사과 상자 {수량}"
-    assert frame.loc[0, "updated_by"] == "faulmann0435@gmail.com" and frame.loc[1, "updated_by"] == ""
-    assert store.history(DICTIONARY_FILE)[0].author == "faulmann0435@gmail.com"
+    assert frame.loc[0, "updated_by"] == "사장님" and frame.loc[1, "updated_by"] == ""
+    assert store.history(DICTIONARY_FILE)[0].author == "사장님"
     assert store.history(DICTIONARY_FILE)[0].message == "사전 수정: 수정 1, 삭제 0"
 
 
@@ -207,7 +207,7 @@ def test_order_page_registers_checked_item_with_built_template():
     assert not at.exception
     frame, _ = load_dictionary_frame(store)
     assert list(frame["display_template"]) == ["메로 구이 {수량*3}마리"]
-    assert frame.loc[0, "updated_by"] == "faulmann0435@gmail.com"
+    assert frame.loc[0, "updated_by"] == "사장님"
 
 
 def test_preview_page_runs_a_bundle():
@@ -277,9 +277,9 @@ def test_product_save_builds_template_and_records_author():
     frame, _sha = load_dictionary_frame(store)
     assert frame.loc[0, "display_template"] == "사과 {수량*8}개 박스 {수량}개"
     assert frame.loc[0, "needs_review"] == "0" and frame.loc[1, "display_template"] == "배 {수량}개"
-    assert frame.loc[0, "updated_by"] == "faulmann0435@gmail.com" and frame.loc[1, "updated_by"] == ""
+    assert frame.loc[0, "updated_by"] == "사장님" and frame.loc[1, "updated_by"] == ""
     last = store.history(DICTIONARY_FILE)[0]
-    assert last.author == "faulmann0435@gmail.com" and last.message == "품목 수정: 사과 (수정 1, 삭제 0)"
+    assert last.author == "사장님" and last.message == "품목 수정: 사과 (수정 1, 삭제 0)"
     assert any("저장했습니다" in s.value for s in at.success)
     assert at.text_input(key=state_key(prefix, "sentence")).value == "사과 8개 박스 1개"
 

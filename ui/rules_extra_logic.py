@@ -9,11 +9,12 @@ from itertools import zip_longest
 
 import pandas as pd
 
-from core.dictionary import DictionarySettings, ItemDictionary
+from core.dictionary import DictionarySettings, ItemDictionary, parse_workers
 from core.pipeline import process_orders
 from ui.preview_logic import preview_bundle
 
 UNCLASSIFIED_LABEL = "미분류"
+MAX_WORKER_NAME = 30
 IMPACT_COLUMNS = ["이전 양식", "이전 품목", "이후 양식", "이후 품목"]
 SEPARATOR_CHOICES: tuple[str, ...] = (", ", " / ", " + ")
 SETTING_LABELS = {"item_separator": "품목 구분 기호", "ignored_option_groups": "비교 제외 옵션 항목"}
@@ -165,7 +166,29 @@ def validate_settings(separator: str) -> list[str]:
     return [] if separator.strip() else ["품목 구분 기호가 비어 있습니다."]
 
 
-def build_settings_text(existing: dict, separator: str, groups: list[str]) -> str:
-    """settings.json text (same layout as the migration tool); other keys are kept."""
+def worker_names(data: dict) -> list[str]:
+    """Worker names of a parsed settings.json (defaults when missing / empty)."""
+    return list(parse_workers(data.get("workers")))
+
+
+def validate_workers(names: list[str]) -> list[str]:
+    """Error lines for an already cleaned worker list."""
+    errors = []
+    if not names:
+        errors.append("작업자 이름을 하나 이상 입력하세요.")
+    if len(set(names)) != len(names):
+        errors.append("작업자 이름이 겹칩니다.")
+    if any(len(n) > MAX_WORKER_NAME for n in names):
+        errors.append(f"작업자 이름은 {MAX_WORKER_NAME}자 이하여야 합니다.")
+    return errors
+
+
+def build_settings_text(existing: dict, separator: str, groups: list[str], workers: list[str] | None = None) -> str:
+    """settings.json text (same layout as the migration tool); other keys are kept.
+
+    "workers" is only written when given, or when it is already in the file.
+    """
     data = {**existing, "ignored_option_groups": groups, "item_separator": separator}
+    if workers is not None and (workers != worker_names(existing) or "workers" in existing):
+        data["workers"] = workers
     return json.dumps(data, ensure_ascii=False, indent=2) + "\n"

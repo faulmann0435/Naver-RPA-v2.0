@@ -13,6 +13,7 @@ from core.template import has_qty_placeholder, render, strip_invisible
 
 DEFAULT_IGNORED_GROUPS: tuple[str, ...] = ("수령일 선택 (도착시간 지정불가)",)
 DEFAULT_SEPARATOR = " / "
+DEFAULT_WORKERS: tuple[str, ...] = ("사장님", "사장님을노리는님", "개발자")
 NAVER_CHANNEL = "naver"
 _TRUE_TEXT = frozenset({"1", "true", "t", "y", "yes", "예", "o"})
 
@@ -36,10 +37,20 @@ class DictionaryEntry:
         return (self.product_no, self.option_key)
 
 
+def parse_workers(value: object) -> tuple[str, ...]:
+    """Trimmed, non-blank, no duplicates (order kept); the default list when nothing is left."""
+    if not isinstance(value, list):
+        return DEFAULT_WORKERS
+    names = (str(v).strip() for v in value if v is not None)
+    cleaned = tuple(dict.fromkeys(n for n in names if n))
+    return cleaned or DEFAULT_WORKERS
+
+
 @dataclass(frozen=True)
 class DictionarySettings:
     ignored_option_groups: tuple[str, ...] = DEFAULT_IGNORED_GROUPS
     item_separator: str = DEFAULT_SEPARATOR
+    workers: tuple[str, ...] = DEFAULT_WORKERS
 
     @classmethod
     def from_json_text(cls, text: str) -> DictionarySettings:
@@ -51,6 +62,7 @@ class DictionarySettings:
         return cls(
             ignored_option_groups=tuple(str(g) for g in groups),
             item_separator=str(separator),
+            workers=parse_workers(data.get("workers")),
         )
 
 

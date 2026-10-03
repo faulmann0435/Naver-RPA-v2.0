@@ -100,7 +100,7 @@ def test_append_entries_defaults_and_skip_existing():
     assert sha == result.sha and len(frame) == 2
     row = frame.iloc[1]
     assert (row["channel"], row["enabled"], row["needs_review"], row["source"]) == ("naver", "1", "1", "manual")
-    assert row["updated_by"] == "t@example.com" and row["updated_at"].endswith("+09:00")
+    assert row["updated_by"] == "tester" and row["updated_at"].endswith("+09:00")
 
 
 def test_append_entries_creates_missing_file():

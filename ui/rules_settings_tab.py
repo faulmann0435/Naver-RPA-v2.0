@@ -15,10 +15,13 @@ from ui.rules_extra_logic import (
     parse_settings,
     settings_values,
     validate_settings,
+    validate_workers,
+    worker_names,
 )
 
 CUSTOM = "직접 입력"
 GROUP_COLUMN = "옵션 항목 이름"
+WORKER_COLUMN = "이름"
 S_SET_CONFLICT = "rules_conflict_settings"
 
 
@@ -33,6 +36,12 @@ def _choose_separator(current: str, sha: str | None) -> str:
     if chosen != CUSTOM:
         return str(chosen)
     return st.text_input("직접 입력할 구분 기호", value=current, key=f"rules_w_sep_custom_{sha}")
+
+
+def _trimmed(values: list[object]) -> list[str]:
+    """Trimmed names without blanks; duplicates are kept so validation can report them."""
+    names = (str(v).strip() for v in values if v is not None and not (isinstance(v, float) and pd.isna(v)))
+    return [n for n in names if n]
 
 
 def _save(store: DataStore, text: str, sha: str | None, message: str) -> None:
@@ -66,12 +75,21 @@ def render_settings_tab(store: DataStore) -> None:
         key=f"rules_w_groups_{sha}",
     )
     new_groups = clean_groups(edited[GROUP_COLUMN].tolist())
-    errors = validate_settings(new_separator)
-    changed = (new_separator, new_groups) != (separator, groups)
+    st.markdown("**작업자 목록**")
+    st.caption("앱을 쓰는 사람 이름. 저장하면 왼쪽 '작업자' 목록에 바로 반영됩니다.")
+    workers = worker_names(existing)
+    edited_workers = st.data_editor(
+        pd.DataFrame({WORKER_COLUMN: workers}, dtype=str), num_rows="dynamic", hide_index=True, width="stretch",
+        key=f"rules_w_workers_{sha}",
+    )
+    new_workers = _trimmed(edited_workers[WORKER_COLUMN].tolist())
+    errors = [*validate_settings(new_separator), *validate_workers(new_workers)]
+    changed = (new_separator, new_groups, new_workers) != (separator, groups, workers)
     for line in errors:
         st.error(line)
     if st.button("저장", type="primary", disabled=not changed or bool(errors), key="rules_w_save_settings"):
-        _save(store, build_settings_text(existing, new_separator, new_groups), sha, "설정 수정: 품목 구분 기호/비교 제외 옵션 항목")
+        message = "설정 수정: 품목 구분 기호/비교 제외 옵션 항목" + (" / 작업자 목록" if new_workers != workers else "")
+        _save(store, build_settings_text(existing, new_separator, new_groups, new_workers), sha, message)
     conflict = st.session_state.get(S_SET_CONFLICT)
     if conflict is not None:
         st.error("다른 사람이 먼저 저장했습니다. '새로 불러오기' 후 다시 수정하세요.")

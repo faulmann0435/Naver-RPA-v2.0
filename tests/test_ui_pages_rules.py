@@ -80,9 +80,9 @@ def test_rules_save_changes_store_and_config_still_parses():
     _edit(at, "rules_data_options", PARAM, "팩")
     _save(at, "options")
     assert not at.exception and not at.error
-    assert "faulmann0435@gmail.com" in store.read_text(OPTION_RULES_FILE).content
+    assert "사장님" in store.read_text(OPTION_RULES_FILE).content
     last = store.history(OPTION_RULES_FILE)[0]
-    assert last.author == "faulmann0435@gmail.com" and last.message == "옵션규칙 수정: 수정 1, 추가 0, 삭제 0"
+    assert last.author == "사장님" and last.message == "옵션규칙 수정: 수정 1, 추가 0, 삭제 0"
     config = load_config_from_store(store, "config.xlsx", "1111")
     assert config["OptionRules"]["Parameter"].iloc[0] == "팩" and len(config["OptionRules"]) == 60
 
@@ -133,7 +133,7 @@ def test_settings_save_writes_settings_json():
     assert not at.exception and not at.error
     data = json.loads(store.read_text(SETTINGS_FILE).content)
     assert data["item_separator"] == " + " and data["ignored_option_groups"]
-    assert store.history(SETTINGS_FILE)[0].author == "faulmann0435@gmail.com"
+    assert store.history(SETTINGS_FILE)[0].author == "사장님"
 
 
 def test_rule_test_tab_shows_vendor_and_final_text():
@@ -181,3 +181,85 @@ def test_revert_blocked_when_old_dictionary_is_invalid():
 def test_dictionary_grid_tab_has_excel_import():
     at = _run(_dictionary_page, _seeded_store())
     assert not at.exception and any("엑셀 가져오기" in m.value for m in at.markdown)
+
+
+def _store_with_workers(names: list[str]):
+    store = _seeded_store()
+    snapshot = store.read_text(SETTINGS_FILE)
+    assert snapshot is not None
+    data = {**json.loads(snapshot.content), "workers": names, "extra_key": 7}
+    store.write_text(SETTINGS_FILE, json.dumps(data, ensure_ascii=False), snapshot.sha, "seed workers")
+    return store
+
+
+def _set_workers_edit(at: AppTest, added: list[str], deleted: list[int] | None = None) -> None:
+    """A data_editor edit set through session_state only lasts for the next run."""
+    sha = at.session_state["rules_data_settings"][1]
+    at.session_state[f"rules_w_workers_{sha}"] = {
+        "edited_rows": {}, "added_rows": [{"이름": n} for n in added], "deleted_rows": deleted or [],
+    }
+
+
+def _edit_workers(at: AppTest, added: list[str], deleted: list[int] | None = None) -> AppTest:
+    _set_workers_edit(at, added, deleted)
+    return at.run()
+
+
+def test_settings_tab_saves_workers_and_keeps_other_keys():
+    store = _store_with_workers(["갑", "을"])
+    at = _run(_rules_page, store)
+    _set_workers_edit(at, ["  병  "])
+    at.button(key="rules_w_save_settings").click()
+    at.run()
+    assert not at.exception and not at.error
+    data = json.loads(store.read_text(SETTINGS_FILE).content)
+    assert data["workers"] == ["갑", "을", "병"] and data["extra_key"] == 7
+    assert "작업자 목록" in store.history(SETTINGS_FILE)[0].message
+
+
+def test_settings_tab_rejects_duplicate_and_empty_workers():
+    store = _store_with_workers(["갑", "을"])
+    sha = store.read_text(SETTINGS_FILE).sha
+    at = _edit_workers(_run(_rules_page, store), ["갑"])
+    assert any("겹칩니다" in e.value for e in at.error)
+    assert at.button(key="rules_w_save_settings").disabled
+    at = _edit_workers(_run(_rules_page, store), [], deleted=[0, 1])
+    assert any("하나 이상" in e.value for e in at.error)
+    assert store.read_text(SETTINGS_FILE).sha == sha
+
+
+def _rules_page_with_sidebar() -> None:
+    from ui import context, rules_page
+    context.render_sidebar("테스트")
+    rules_page.render()
+
+
+def test_sidebar_picker_lists_workers_and_sets_commit_author():
+    store = _store_with_workers(["갑", "을"])
+    at = _run(_rules_page_with_sidebar, store)
+    assert not at.exception
+    picker = at.sidebar.selectbox(key="worker_name")
+    assert picker.label == "작업자" and picker.options == ["갑", "을"] and picker.value == "갑"
+    assert any("변경 이력에 남습니다" in c.value for c in at.sidebar.caption)
+    picker.select("을").run()
+    assert at.query_params["worker"] == ["을"]
+    sha = store.read_text(SETTINGS_FILE).sha
+    at.selectbox(key=f"rules_w_sep_{sha}").set_value(" + ").run()
+    at.button(key="rules_w_save_settings").click()
+    at.run()
+    assert not at.exception and not at.error
+    assert store.history(SETTINGS_FILE)[0].author == "을"
+
+
+def test_sidebar_picker_restores_choice_from_query_param():
+    at = AppTest.from_function(_rules_page_with_sidebar, default_timeout=TIMEOUT)
+    at.session_state["_test_store"] = _store_with_workers(["갑", "을"])
+    at.query_params["worker"] = "을"
+    at.run()
+    assert not at.exception and at.sidebar.selectbox(key="worker_name").value == "을"
+
+
+def test_sidebar_without_store_uses_default_workers():
+    at = AppTest.from_file("app.py", default_timeout=TIMEOUT).run()
+    assert not at.exception
+    assert at.sidebar.selectbox(key="worker_name").options == ["사장님", "사장님을노리는님", "개발자"]

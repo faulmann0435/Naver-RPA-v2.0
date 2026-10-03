@@ -3,7 +3,7 @@ import json
 
 import pandas as pd
 
-from core.dictionary import DictionarySettings, ItemDictionary
+from core.dictionary import DEFAULT_WORKERS, DictionarySettings, ItemDictionary
 from store.rules_repo import load_config_from_store
 from tests.test_ui_logic import ORDER, make_store
 from ui.rules_extra_logic import (
@@ -15,6 +15,8 @@ from ui.rules_extra_logic import (
     run_rule_test,
     settings_values,
     validate_settings,
+    validate_workers,
+    worker_names,
 )
 
 
@@ -62,3 +64,14 @@ def test_settings_helpers_keep_layout_and_unknown_keys():
     assert settings_values({}) == (DictionarySettings().item_separator, list(DictionarySettings().ignored_option_groups))
     assert clean_groups([" a ", "", None, "a", float("nan"), "b"]) == ["a", "b"]
     assert validate_settings("  ") and not validate_settings(" + ")
+
+
+def test_worker_helpers_and_settings_text():
+    assert worker_names({}) == list(DEFAULT_WORKERS) and worker_names({"workers": ["a", "a", " b"]}) == ["a", "b"]
+    assert not validate_workers(["a", "b"])
+    assert validate_workers([]) and validate_workers(["a", "a"]) and validate_workers(["가" * 31])
+    assert not validate_workers(["가" * 30])
+    data = {"ignored_option_groups": ["a"], "item_separator": " / ", "x": 1}
+    assert build_settings_text(data, " / ", ["a"], list(DEFAULT_WORKERS)) == build_settings_text(data, " / ", ["a"])
+    new = json.loads(build_settings_text(data, " / ", ["a"], ["갑", "을"]))
+    assert new["workers"] == ["갑", "을"] and new["x"] == 1
