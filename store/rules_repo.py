@@ -22,6 +22,7 @@ DICTIONARY_COLUMNS = [
     "channel", "product_no", "option_key", "product_name_ref", "option_raw_ref", "vendor_id",
     "display_template", "display_template_qty1", "sum_group", "unit_weight_kg", "append_to_end",
     "needs_review", "enabled", "source", "last_seen_at", "updated_at", "updated_by",
+    "created_at",  # set once when the row is created; older CSVs lack it (loaded as empty)
 ]
 DEFAULT_SETTINGS = {
     "ignored_option_groups": ["수령일 선택 (도착시간 지정불가)"],

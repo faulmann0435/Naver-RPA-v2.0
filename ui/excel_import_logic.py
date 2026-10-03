@@ -15,6 +15,7 @@ from store.validators import Issue, validate_dictionary
 from ui.dictionary_logic import (
     EDIT_FIELDS,
     EXPORT_HEADERS,
+    OPTIONAL_EXPORT_COLUMNS,
     _bool_text,
     apply_cell,
     describe_issue,
@@ -55,14 +56,16 @@ def _s(value: object) -> str:
 
 
 def read_import_frame(data: bytes) -> pd.DataFrame:
-    """Rows of an exported .xlsx as text with DICTIONARY_COLUMNS; unknown / missing columns are an error."""
+    """Rows of an exported .xlsx as text with DICTIONARY_COLUMNS; unknown / missing columns are an error
+    (except the optional ones, e.g. 등록 시각, which old exports lack)."""
     try:
         raw = pd.read_excel(io.BytesIO(data), dtype=str, keep_default_na=False)
     except (ValueError, OSError, KeyError, zipfile.BadZipFile) as e:
         raise ImportFormatError(f"엑셀 파일을 읽을 수 없습니다. .xlsx 파일인지 확인하세요. ({type(e).__name__})") from e
     headers = [str(c).strip() for c in raw.columns]
     unknown = [h for h in headers if h not in _BY_HEADER]
-    missing = [h for h in EXPORT_HEADERS.values() if h not in headers]
+    optional = {EXPORT_HEADERS[c] for c in OPTIONAL_EXPORT_COLUMNS}
+    missing = [h for h in EXPORT_HEADERS.values() if h not in headers and h not in optional]
     if unknown or missing:
         parts = []
         if unknown:
@@ -119,6 +122,7 @@ def _new_entry_row(row: pd.Series, key: RowKey, user: str, now: str) -> dict[str
     out["append_to_end"] = _bool_text(_parse_bool(out["append_to_end"]))
     out["source"] = SOURCE_EXCEL
     out["updated_at"], out["updated_by"] = now, user
+    out["created_at"] = now  # never taken from the file
     return out
 
 

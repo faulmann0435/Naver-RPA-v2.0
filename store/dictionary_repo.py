@@ -103,7 +103,7 @@ def _new_row(row: dict, author: Author, now: str, settings: DictionarySettings) 
     product_no, option_key = entry_key(row.get("product_no"), row.get("option_key"), settings)
     base.update(
         product_no=product_no, option_key=option_key, channel="naver", enabled="1", needs_review="1",
-        source="manual", updated_at=now, updated_by=author.name, last_seen_at="",
+        source="manual", updated_at=now, updated_by=author.name, last_seen_at="", created_at=now,
     )
     if not base["append_to_end"]:
         base["append_to_end"] = "0"
@@ -196,6 +196,7 @@ def add_missing_entries(
         frame = frame_from_snapshot(snapshot)
         sha = snapshot.sha if snapshot else None
         known = _all_keys(frame, settings)
+        now = now_kst_iso()
         added: list[tuple[str, str]] = []
         skipped: list[tuple[str, str]] = []
         new_rows = []
@@ -206,7 +207,8 @@ def add_missing_entries(
                 continue
             known.add(key)
             added.append(key)
-            new_rows.append({**row.to_dict(), "product_no": key[0], "option_key": key[1]})
+            fields = {**row.to_dict(), "product_no": key[0], "option_key": key[1]}
+            new_rows.append({**fields, "created_at": fields["created_at"] or now})
         if not added:
             return AppendResult([], skipped, sha or "")
         merged = pd.concat([frame.reindex(columns=DICTIONARY_COLUMNS), pd.DataFrame(new_rows, columns=DICTIONARY_COLUMNS)],

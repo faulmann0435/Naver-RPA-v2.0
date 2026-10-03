@@ -20,6 +20,7 @@ from ui.option_form import (
 )
 from ui.option_logic import FormValues, values_from_row
 from ui.product_logic import (
+    COL_CREATED,
     COL_DIRTY,
     COL_NAME,
     COL_OPTIONS,
@@ -49,6 +50,7 @@ TABLE_COLUMNS = {
     COL_OPTIONS: st.column_config.Column(width="small"),
     COL_DIRTY: st.column_config.Column(width="small"),
     COL_NAME: st.column_config.Column(width="large"),
+    COL_CREATED: st.column_config.Column(width="small"),
 }
 
 

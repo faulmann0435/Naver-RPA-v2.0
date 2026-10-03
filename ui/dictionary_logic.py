@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Sequence
+from datetime import datetime
 
 import pandas as pd
 
@@ -24,10 +25,11 @@ RID = "_rid"
 DELETE = "_delete"
 V_ENABLED, V_REVIEW, V_NAME, V_OPTION = "사용", "검토 필요", "상품명", "옵션"
 V_VENDOR, V_TEMPLATE, V_QTY1 = "발주양식", "발주서 표기", "수량 1일 때 표기"
+V_CREATED = "등록일"
 V_GROUP, V_WEIGHT, V_APPEND, V_DELETE = "합산 이름", "1개당 무게(kg)", "묶음 끝에 붙임", "삭제"
-BASIC_VIEW = [V_ENABLED, V_REVIEW, V_NAME, V_OPTION, V_VENDOR, V_TEMPLATE, V_QTY1, V_DELETE]
-ADVANCED_VIEW = [V_ENABLED, V_REVIEW, V_NAME, V_OPTION, V_VENDOR, V_TEMPLATE, V_QTY1, V_GROUP, V_WEIGHT, V_APPEND, V_DELETE]
-DISABLED_VIEW = [V_NAME, V_OPTION]
+BASIC_VIEW = [V_ENABLED, V_REVIEW, V_NAME, V_OPTION, V_CREATED, V_VENDOR, V_TEMPLATE, V_QTY1, V_DELETE]
+ADVANCED_VIEW = [V_ENABLED, V_REVIEW, V_NAME, V_OPTION, V_CREATED, V_VENDOR, V_TEMPLATE, V_QTY1, V_GROUP, V_WEIGHT, V_APPEND, V_DELETE]
+DISABLED_VIEW = [V_NAME, V_OPTION, V_CREATED]
 ALL_VENDORS = "전체"
 EXPORT_HEADERS = {
     "channel": "채널", "product_no": "상품번호", "option_key": "옵션(정규화)", "product_name_ref": "상품명",
@@ -35,7 +37,10 @@ EXPORT_HEADERS = {
     "display_template_qty1": "수량 1일 때 표기", "sum_group": "합산 이름", "unit_weight_kg": "1개당 무게(kg)",
     "append_to_end": "묶음 끝에 붙임", "needs_review": "검토 필요", "enabled": "사용", "source": "출처",
     "last_seen_at": "마지막 주문 확인", "updated_at": "수정 시각", "updated_by": "수정한 사람",
+    "created_at": "등록 시각",
 }
+# Columns an exported file may lack (files exported before they existed still import).
+OPTIONAL_EXPORT_COLUMNS = ("created_at",)
 # dictionary column -> (view column, kind)
 _BOOL_FIELDS = {"enabled": V_ENABLED, "needs_review": V_REVIEW, "append_to_end": V_APPEND}
 _TEXT_FIELDS = {
@@ -51,6 +56,15 @@ FIELD_LABELS = {
 
 def _s(value: object) -> str:
     return "" if value is None or (isinstance(value, float) and pd.isna(value)) else str(value).strip()
+
+
+def format_created(value: object) -> str:
+    """'2026-10-03T09:54:24+09:00' -> '2026-10-03 09:54'; empty or unreadable -> ''."""
+    text = _s(value)
+    try:
+        return datetime.fromisoformat(text).strftime("%Y-%m-%d %H:%M") if text else ""
+    except ValueError:
+        return ""
 
 
 def make_work(frame: pd.DataFrame) -> pd.DataFrame:
@@ -88,6 +102,7 @@ def build_view(work: pd.DataFrame, rids: Sequence[int], advanced: bool) -> pd.Da
     view[V_REVIEW] = part["needs_review"].map(_parse_bool)
     view[V_NAME] = part["product_name_ref"]
     view[V_OPTION] = part["option_raw_ref"]
+    view[V_CREATED] = part["created_at"].map(format_created)
     view[V_VENDOR] = part["vendor_id"]
     view[V_TEMPLATE] = part["display_template"]
     view[V_QTY1] = part["display_template_qty1"]

@@ -97,7 +97,7 @@ def test_product_summaries_filters():
 
 def test_summary_table_marks_dirty_products():
     table = summary_table(product_summaries(_frame(_rows())), {G4})
-    assert list(table.columns) == ["확인 필요", "옵션 수", "저장 안 됨", "상품명"]
+    assert list(table.columns) == ["확인 필요", "옵션 수", "저장 안 됨", "상품명", "등록일"]
     assert table["저장 안 됨"].tolist() == ["", "✎", "", ""]
 
 

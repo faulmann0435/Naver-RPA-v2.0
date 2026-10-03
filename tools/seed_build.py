@@ -145,6 +145,7 @@ def _row(item: SeedItem, now: str) -> dict[str, object]:
         "last_seen_at": "",
         "updated_at": now,
         "updated_by": "seed",
+        "created_at": now,
     }
 
 

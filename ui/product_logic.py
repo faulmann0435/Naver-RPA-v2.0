@@ -5,6 +5,7 @@ import hashlib
 from collections import Counter
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
@@ -20,10 +21,11 @@ from store.dictionary_repo import (
 )
 from store.rules_repo import DICTIONARY_COLUMNS
 from store.validators import validate_dictionary
-from ui.dictionary_logic import ALL_VENDORS, describe_issue
+from ui.dictionary_logic import ALL_VENDORS, describe_issue, format_created
 from ui.option_logic import FormValues, row_fields, values_from_row
 
 COL_NAME, COL_OPTIONS, COL_REVIEW, COL_DIRTY = "상품명", "옵션 수", "확인 필요", "저장 안 됨"
+COL_CREATED = "등록일"
 __all__ = ["group_id", "group_id_of"]
 DIRTY_MARK = "✎"
 
@@ -44,6 +46,7 @@ class ProductSummary:
     name: str
     option_count: int
     review_count: int
+    created_at: str = ""  # earliest non-empty created_at of the options (ISO text; empty if none)
 
 
 def _text(frame: pd.DataFrame) -> pd.DataFrame:
@@ -92,8 +95,24 @@ def product_summaries(
         if review_only and review == 0:
             continue
         if _matches(group, name, query, vendor):
-            summaries.append(ProductSummary(str(gid), str(group["product_no"].iloc[0]), name, len(group), review))
+            summaries.append(ProductSummary(
+                str(gid), str(group["product_no"].iloc[0]), name, len(group), review, earliest_created(group)
+            ))
     return sorted(summaries, key=lambda s: (s.review_count == 0, s.name))
+
+
+def earliest_created(group: pd.DataFrame) -> str:
+    """The earliest readable created_at among a group's options ('' when none)."""
+    stamps = [(moment, text) for text in group["created_at"] if (moment := _moment(text)) is not None]
+    return min(stamps)[1] if stamps else ""
+
+
+def _moment(text: str) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(text.strip())
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone(timedelta(hours=9)))
 
 
 def summary_table(summaries: list[ProductSummary], dirty: Collection[str]) -> pd.DataFrame:
@@ -103,8 +122,9 @@ def summary_table(summaries: list[ProductSummary], dirty: Collection[str]) -> pd
             COL_OPTIONS: [s.option_count for s in summaries],
             COL_DIRTY: [DIRTY_MARK if s.group in dirty else "" for s in summaries],
             COL_NAME: [s.name for s in summaries],
+            COL_CREATED: [format_created(s.created_at) for s in summaries],
         },
-        columns=[COL_REVIEW, COL_OPTIONS, COL_DIRTY, COL_NAME],
+        columns=[COL_REVIEW, COL_OPTIONS, COL_DIRTY, COL_NAME, COL_CREATED],
     )
 
 
