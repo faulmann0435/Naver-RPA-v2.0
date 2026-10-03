@@ -11,12 +11,15 @@ from ui.context import (  # noqa: F401  # re-exported: tests and other modules i
     load_config_local,
     render_sidebar,
 )
+from ui.password_gate import require_password
 
 PAGE_TITLE = "속초 발주 처리 시스템 v15"
 
 
 def main() -> None:
     st.set_page_config(page_title=PAGE_TITLE, layout="wide")
+    if not require_password():
+        return  # nothing below (config, sidebar, pages, data store) runs before the password is accepted
     try:
         _config, config_source = get_config()
     except FileNotFoundError:
