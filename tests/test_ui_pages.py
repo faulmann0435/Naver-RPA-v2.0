@@ -81,7 +81,7 @@ def test_full_app_navigates_all_pages():
     at.session_state["_test_store"] = _seeded_store()
     at.run()
     assert not at.exception
-    for page in ("dictionary", "preview", "order", "rules", "history"):
+    for page in ("dictionary", "layout", "preview", "order", "rules", "history"):
         at.switch_page(f"ui/{page}_page.py").run()
         assert not at.exception
 
