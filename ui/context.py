@@ -12,6 +12,7 @@ from core.dictionary import DEFAULT_WORKERS, DictionarySettings, ItemDictionary
 from store.base import Author, DataStore, StoreError
 from store.dictionary_repo import empty_frame, load_dictionary_frame, load_state
 from store.github_store import GitHubStore
+from store.layout_repo import load_layout
 from store.rules_repo import load_config_from_store
 
 CONFIG_PATH = str(Path(__file__).resolve().parent.parent / "config.xlsx")
@@ -21,6 +22,8 @@ WORKER_PARAM = "worker"
 AUTHOR_EMAIL = "app@naver-rpa.local"
 TEST_STORE_KEY = "_test_store"
 CACHE_SECONDS = 60
+
+LAYOUT_SOURCE_STORE, LAYOUT_SOURCE_FILE = "데이터 저장소", "config.xlsx"
 
 DictionaryState = tuple[ItemDictionary, DictionarySettings, str | None]
 
@@ -158,9 +161,38 @@ def _raw_layout(config_path: str, _password: str | None, cache_key: str) -> pd.D
     return read_config_sheets(config_path, _password)["OutputLayout"]
 
 
+@st.cache_data(ttl=CACHE_SECONDS)
+def _cached_store_layout(repo: str, branch: str) -> pd.DataFrame | None:
+    snapshot = load_layout(_github_store(repo, branch))
+    return None if snapshot is None else snapshot.raw
+
+
+def _store_layout() -> pd.DataFrame | None:
+    """OutputLayout of the data store (None: no store, no output_layout.csv yet, or the store failed)."""
+    injected = st.session_state.get(TEST_STORE_KEY)
+    if injected is not None:
+        snapshot = load_layout(injected)
+        return None if snapshot is None else snapshot.raw
+    settings = _data_store_settings()
+    if settings is None:
+        return None
+    try:
+        return _cached_store_layout(*settings)
+    except (StoreError, requests.RequestException, KeyError, ValueError):
+        return None  # same fallback as get_config: keep working with config.xlsx
+
+
+def load_layout_with_source() -> tuple[pd.DataFrame, str]:
+    """(OutputLayout as raw sheet frame, where it came from): the data store once migrated, else config.xlsx."""
+    stored = _store_layout()
+    if stored is not None:
+        return stored.copy(), LAYOUT_SOURCE_STORE
+    return _raw_layout(CONFIG_PATH, CONFIG_PASSWORD, _file_cache_key(CONFIG_PATH)).copy(), LAYOUT_SOURCE_FILE
+
+
 def load_raw_layout() -> pd.DataFrame:
-    """OutputLayout exactly as read from config.xlsx (the rule checks normalize it themselves)."""
-    return _raw_layout(CONFIG_PATH, CONFIG_PASSWORD, _file_cache_key(CONFIG_PATH)).copy()
+    """OutputLayout in raw sheet shape (the rule checks normalize it themselves)."""
+    return load_layout_with_source()[0]
 
 
 def vendor_ids(config: dict) -> list[str]:
@@ -207,15 +239,24 @@ def clear_data_caches() -> None:
     """Call after any save so the next read sees the new data."""
     _cached_dictionary_state.clear()
     _load_config_from_data_store.clear()
+    _cached_store_layout.clear()
 
 
 # ---------------------------------------------------------------- sidebar
+
+def _layout_source_label() -> str:
+    try:
+        return load_layout_with_source()[1]
+    except (OSError, ValueError):
+        return LAYOUT_SOURCE_FILE
+
 
 def render_sidebar(config_source: str) -> None:
     current_user(show_widget=True)
     with st.sidebar:
         st.subheader("Config")
         st.caption(f"규칙 출처: {config_source}")
+        st.caption(f"양식 출처: {_layout_source_label()}")
         if get_store() is not None:
             try:
                 dictionary, _settings, _sha = load_dictionary_state()
