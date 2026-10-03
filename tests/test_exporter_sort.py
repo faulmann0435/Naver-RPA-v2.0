@@ -25,3 +25,15 @@ def test_columns_past_z_come_after_z():
 def test_non_letter_values_last_and_stable():
     out = build_output_dataframe(pd.DataFrame({"a": [1]}), _layout(["?", "B", "", "A", "!"]), "v")
     assert list(out.columns) == ["hA", "hB", "h?", "h", "h!"]
+
+
+def test_row_number_source_fills_1_to_n():
+    from core.exporter import ROW_NUMBER_SOURCE
+
+    layout = pd.DataFrame({
+        "VendorID": ["v", "v", "v"], "ExcelCol": ["A", "B", "C"], "HeaderName": ["순번", "이름", "고정"],
+        "SourceCol": [ROW_NUMBER_SOURCE, "name", ROW_NUMBER_SOURCE], "HardcodedValue": ["", "", "x"],
+    })
+    out = build_output_dataframe(pd.DataFrame({"name": ["가", "나", "다"]}, index=[7, 3, 9]), layout, "v")
+    assert out["순번"].tolist() == [1, 2, 3] and out["이름"].tolist() == ["가", "나", "다"]
+    assert out["고정"].tolist() == ["x", "x", "x"]  # fixed text still wins

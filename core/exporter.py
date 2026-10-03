@@ -10,6 +10,10 @@ except ImportError:
     xl_col_to_name = None
 
 
+# 매핑데이터 value that fills a column with 1, 2, 3 ... per output file (not a column of the order file)
+ROW_NUMBER_SOURCE = "_순번"
+
+
 def excel_column_number(value) -> int | None:
     """Excel column letters as a number (A=1 ... Z=26, AA=27); None when it is not a letter code."""
     text = str(value).strip().upper() if pd.notna(value) else ""
@@ -44,7 +48,9 @@ def build_output_dataframe(merged_df, output_layout, vendor_id):
             out[header] = [str(hc).strip()] * row_count
         else:
             src = r.get("SourceCol")
-            if pd.notna(src) and str(src).strip() and str(src).strip() in merged_df.columns:
+            if pd.notna(src) and str(src).strip() == ROW_NUMBER_SOURCE:
+                out[header] = list(range(1, row_count + 1))
+            elif pd.notna(src) and str(src).strip() and str(src).strip() in merged_df.columns:
                 out[header] = merged_df[str(src).strip()].values
             else:
                 out[header] = [""] * row_count

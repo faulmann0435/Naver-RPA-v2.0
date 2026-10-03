@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from core.exporter import excel_column_number
+from core.exporter import ROW_NUMBER_SOURCE, excel_column_number
 from store.csv_codec import from_csv_text, to_csv_text
 from store.layout_repo import (
     COLUMN,
@@ -55,6 +55,7 @@ SOURCE_LABELS: dict[str, str] = {
     "상품명": "상품명 (묶음이면 첫 번째)",
     "수량": "수량 (묶음 합계)",
     "결제일": "결제일 (묶음 중 가장 빠른 날)",
+    ROW_NUMBER_SOURCE: "순번 (1, 2, 3 … 자동)",
 }
 KNOWN_SOURCES = frozenset(SOURCE_LABELS)
 _LABEL_TO_SOURCE = {label: source for source, label in SOURCE_LABELS.items()}
