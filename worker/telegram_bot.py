@@ -1,0 +1,183 @@
+"""Telegram remote control: [📦 발주 처리] sends the purchase orders to the owner's phone.
+
+    python -m worker.telegram_bot
+
+.env keys: TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_CHAT_IDS (comma separated). Until a chat id is
+allowed, the bot only answers with that chat's id so it can be added. Only allowed chats can
+run anything. Nothing is sent to the delivery sites: the owner shares the files on KakaoTalk
+and taps [✅ 카톡 공유 완료], which records the orders so they are not sent twice.
+"""
+from __future__ import annotations
+
+import io
+import logging
+import os
+import sys
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+
+import requests
+
+from worker.naver_client import ENV_FILE, read_env_file
+from worker.order_run import RunResult, mark_shared, run_orders, summary
+
+API = "https://api.telegram.org/bot{token}/{method}"
+RUN_BUTTON = "📦 발주 처리"
+DONE_PREFIX = "done:"
+POLL_TIMEOUT = 30
+HTTP_TIMEOUT = POLL_TIMEOUT + 10
+TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
+CHATS_KEY = "TELEGRAM_ALLOWED_CHAT_IDS"
+
+log = logging.getLogger("telegram_bot")
+
+
+def _setting(key: str) -> str:
+    return os.environ.get(key) or read_env_file(ENV_FILE).get(key, "")
+
+
+@dataclass(frozen=True)
+class BotSettings:
+    token: str
+    allowed_chats: frozenset[int]
+
+    @classmethod
+    def load(cls) -> BotSettings:
+        token = _setting(TOKEN_KEY)
+        if not token:
+            raise SystemExit(f".env에 {TOKEN_KEY}가 없습니다.")
+        chats = frozenset(int(c) for c in _setting(CHATS_KEY).replace(" ", "").split(",") if c)
+        return cls(token, chats)
+
+
+class Telegram:
+    """The few Bot API calls the bot needs."""
+
+    def __init__(self, token: str, session: requests.Session | None = None):
+        self._token = token
+        self._http = session or requests.Session()
+
+    def call(self, method: str, files: dict | None = None, **params) -> dict:
+        url = API.format(token=self._token, method=method)
+        resp = self._http.post(url, data=params if files else None, json=None if files else params,
+                               files=files, timeout=HTTP_TIMEOUT)
+        body = resp.json()
+        if not body.get("ok"):
+            raise RuntimeError(f"Telegram {method}: {body.get('description')}")
+        return body["result"]
+
+    def send(self, chat_id: int, text: str, **extra) -> dict:
+        return self.call("sendMessage", chat_id=chat_id, text=text, **extra)
+
+    def send_file(self, chat_id: int, name: str, data: bytes) -> dict:
+        return self.call("sendDocument", files={"document": (name, data)}, chat_id=chat_id)
+
+
+class TelegramNotifier:
+    """Notifier for the downloads watcher: one message per line to every allowed chat."""
+
+    def __init__(self, settings: BotSettings):
+        self._tg = Telegram(settings.token)
+        self._chats = settings.allowed_chats
+
+    def send(self, text: str) -> None:
+        for chat in self._chats:
+            self._tg.send(chat, text)
+
+
+def run_keyboard() -> dict:
+    return {"keyboard": [[{"text": RUN_BUTTON}]], "resize_keyboard": True, "is_persistent": True}
+
+
+class OrderBot:
+    def __init__(self, tg: Telegram, allowed: frozenset[int],
+                 runner: Callable[[], RunResult] = run_orders,
+                 mark: Callable[[tuple[str, ...]], int] = mark_shared):
+        self.tg, self.allowed, self.runner, self.mark = tg, allowed, runner, mark
+        self.pending: dict[str, tuple[str, ...]] = {}  # run id -> product order ids awaiting [공유 완료]
+
+    def handle(self, update: dict) -> None:
+        if "callback_query" in update:
+            self._on_button(update["callback_query"])
+        elif "message" in update:
+            self._on_message(update["message"])
+
+    def _on_message(self, message: dict) -> None:
+        chat = message["chat"]["id"]
+        if chat not in self.allowed:
+            log.info("등록 안 된 대화방 %s", chat)
+            self.tg.send(chat, f"이 대화방 번호는 {chat} 입니다. 개발자에게 알려 주세요.")
+            return
+        if message.get("text") == RUN_BUTTON:
+            self._run(chat)
+        else:
+            self.tg.send(chat, f"아래 [{RUN_BUTTON}] 버튼을 누르면 새 주문으로 발주서를 만듭니다.",
+                         reply_markup=run_keyboard())
+
+    def _run(self, chat: int) -> None:
+        self.tg.send(chat, "⏳ 네이버에서 주문을 가져오는 중…")
+        try:
+            run = self.runner()
+        except Exception as exc:  # report every failure to the owner instead of going silent
+            log.exception("발주 처리 실패")
+            self.tg.send(chat, f"⚠️ 발주 처리 실패: {type(exc).__name__}: {str(exc)[:300]}")
+            return
+        for f in run.files:
+            self.tg.send_file(chat, f["filename"], f["data"].getvalue())
+        extra: dict = {"reply_markup": run_keyboard()}
+        if run.product_order_ids:
+            run_id = uuid.uuid4().hex[:12]
+            self.pending = {**self.pending, run_id: run.product_order_ids}
+            button = {"text": "✅ 카톡 공유 완료", "callback_data": f"{DONE_PREFIX}{run_id}"}
+            extra = {"reply_markup": {"inline_keyboard": [[button]]}}
+        self.tg.send(chat, summary(run), **extra)
+
+    def _on_button(self, query: dict) -> None:
+        chat = query["message"]["chat"]["id"]
+        data = query.get("data", "")
+        if chat not in self.allowed or not data.startswith(DONE_PREFIX):
+            return
+        ids = self.pending.get(data.removeprefix(DONE_PREFIX))
+        self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
+        if ids is None:
+            self.tg.send(chat, "이 버튼은 만료됐습니다. 필요하면 다시 [발주 처리]를 눌러 주세요.")
+            return
+        added = self.mark(ids)
+        self.pending = {k: v for k, v in self.pending.items() if v is not ids}
+        self.tg.call("editMessageReplyMarkup", chat_id=chat, message_id=query["message"]["message_id"],
+                     reply_markup={"inline_keyboard": []})
+        self.tg.send(chat, f"✅ 주문 {added}건을 공유 완료로 기록했습니다. 다음 [발주 처리]에서는 빠집니다.",
+                     reply_markup=run_keyboard())
+
+
+def poll_forever(bot: OrderBot) -> None:
+    offset = 0
+    while True:
+        try:
+            updates = bot.tg.call("getUpdates", offset=offset, timeout=POLL_TIMEOUT)
+        except (requests.RequestException, RuntimeError):
+            log.exception("텔레그램 연결 실패, 다시 시도")
+            continue
+        for update in updates:
+            offset = update["update_id"] + 1
+            try:
+                bot.handle(update)
+            except Exception:  # one bad update must not stop the bot
+                log.exception("처리 실패: update %s", update.get("update_id"))
+
+
+def main() -> int:
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    settings = BotSettings.load()
+    bot = OrderBot(Telegram(settings.token), settings.allowed_chats)
+    me = bot.tg.call("getMe")
+    log.info("봇 @%s 시작 (허용된 대화방 %d개). 끄려면 Ctrl+C", me["username"], len(settings.allowed_chats))
+    poll_forever(bot)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
