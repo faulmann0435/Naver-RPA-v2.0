@@ -27,12 +27,20 @@ from worker.probe import shape
 
 KEY = "상품주문번호"
 EXAMPLES = 3
+# Naver masks buyer/recipient details of older, finished orders with '*' (e.g. 010-1***-5***).
+PERSONAL_COLUMNS = ("구매자명", "수취인명", "구매자연락처", "수취인연락처1", "수취인연락처2", "통합배송지")
+
+
+def masked_rows(api: pd.DataFrame) -> int:
+    """Rows where the API sent personal details masked (older, finished orders)."""
+    present = [c for c in PERSONAL_COLUMNS if c in api.columns]
+    return int(api[present].astype(str).apply(lambda col: col.str.contains("*", regex=False)).any(axis=1).sum())
 
 
 def column_differences(excel: pd.DataFrame, api: pd.DataFrame) -> dict[str, list[str]]:
     """Per column, masked examples of rows (matched by 상품주문번호) whose values differ."""
-    left = excel.set_index(KEY).sort_index()
-    right = api.set_index(KEY).reindex(left.index)
+    left = excel.drop_duplicates(KEY).set_index(KEY).sort_index()
+    right = api.drop_duplicates(KEY).set_index(KEY).reindex(left.index)
     found: dict[str, list[str]] = {}
     for column in (c for c in COLUMN_ORDER if c != KEY and c in left.columns):
         a, b = left[column], right[column]
@@ -51,9 +59,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     excel = filter_instruction_rows(_read_order(load_excel, args.order_file)[0])
+    if KEY not in excel.columns:
+        print(f"'{KEY}' 칸이 없는 파일이라 대조할 수 없습니다.")
+        return 1
+    duplicates = int(excel[KEY].duplicated().sum())
     token = fetch_token(load_credentials())
-    api = details_to_dataframe(fetch_details(token, excel[KEY].astype(str)))
-    print(f"엑셀 {len(excel)}줄, API에서 받은 {len(api)}줄")
+    api = details_to_dataframe(fetch_details(token, excel[KEY].drop_duplicates().astype(str)))
+    print(f"엑셀 {len(excel)}줄, API에서 받은 {len(api)}줄"
+          + (f" (엑셀에 같은 상품주문번호가 {duplicates}줄 중복)" if duplicates else ""))
+    masked = masked_rows(api)
+    if masked:
+        print(f"⚠ {masked}줄은 네이버가 개인정보를 가려서 보냄(오래된·완료된 주문) — 이름·연락처·주소 칸 차이는 정상")
 
     diffs = column_differences(excel, api)
     same = [c for c in COLUMN_ORDER if c in excel.columns and c not in diffs]
