@@ -32,6 +32,8 @@ GOLDEN_DIR = REPO_ROOT / "tests" / "golden"
 CONFIG_PATH = REPO_ROOT / "config.xlsx"
 REQUIRED_COLUMNS = {"상품명", "옵션정보", "수량", "배송비 묶음번호"}
 _DATE_SUFFIX = re.compile(r"_\d{8}(?=\.xlsx$)")
+# Output of `python -m worker.demo`, kept next to the samples; never an input.
+DEMO_DIR_NAME = "API변환_데모"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -95,6 +97,8 @@ def discover_inputs() -> list[Path]:
     found = []
     for path in sorted(sample_dir().rglob("*.xlsx")):
         if REPO_ROOT in path.parents or path.name.startswith("~$") or path.name == "config.xlsx":
+            continue
+        if DEMO_DIR_NAME in path.relative_to(sample_dir()).parts:
             continue
         try:
             df, _ = _read_order(load_excel, path)
