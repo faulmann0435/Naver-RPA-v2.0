@@ -28,7 +28,7 @@ ORDER_QUERY_URL = f"{ORDERS_BASE}/query"
 TIMEOUT_SECONDS = 15
 QUERY_CHUNK = 300  # most product orders one query call takes
 WINDOW = timedelta(hours=24)  # widest lastChanged range the API accepts
-MAX_PAGES = 30  # guard against runaway paging
+MAX_PAGES = 60  # guard against runaway paging; a 14-day lookback already needs 14
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 

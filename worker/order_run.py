@@ -33,7 +33,8 @@ from worker.naver_client import (
 CONFIG_PASSWORD = "1111"  # protects config.xlsx sheets against accidental edits, not a secret
 SECRETS_FILE = REPO_ROOT / ".streamlit" / "secrets.toml"
 LEDGER_FILE = REPO_ROOT.parent / "발주기록" / "공유완료_주문.json"
-LOOKBACK_DAYS = 3
+PENDING_FILE = REPO_ROOT.parent / "발주기록" / "공유대기_발주.json"
+LOOKBACK_DAYS = 14  # covers a long holiday; the ledger keeps the overlap from being sent twice
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,16 @@ def mark_shared(ids: tuple[str, ...], path: Path = LEDGER_FILE) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(sorted(after), ensure_ascii=False, indent=1), encoding="utf-8")
     return len(after) - len(before)
+
+
+def read_pending(path: Path = PENDING_FILE) -> dict[str, dict]:
+    """Runs sent to the phone but not yet confirmed: run id -> {"ids": [...], "when": "MM/DD HH:MM"}."""
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def write_pending(pending: dict[str, dict], path: Path = PENDING_FILE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(pending, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def fetch_paid_items(days: int = LOOKBACK_DAYS) -> list[dict]:

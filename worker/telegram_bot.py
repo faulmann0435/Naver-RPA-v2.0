@@ -9,6 +9,7 @@ and taps [✅ 카톡 공유 완료], which records the orders so they are not se
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import os
@@ -16,15 +17,26 @@ import sys
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import requests
 
 from worker.naver_client import ENV_FILE, read_env_file
-from worker.order_run import RunResult, mark_shared, run_orders, summary
+from worker.order_run import (
+    PENDING_FILE,
+    RunResult,
+    mark_shared,
+    read_pending,
+    run_orders,
+    summary,
+    write_pending,
+)
 
 API = "https://api.telegram.org/bot{token}/{method}"
 RUN_BUTTON = "📦 발주 처리"
 DONE_PREFIX = "done:"
+PENDING_SENT = "sent:"  # + the asked-about runs, so an old question cannot settle a newer run
+PENDING_REDO = "redo:"
 POLL_TIMEOUT = 30
 HTTP_TIMEOUT = POLL_TIMEOUT + 10
 TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
@@ -90,12 +102,25 @@ def run_keyboard() -> dict:
     return {"keyboard": [[{"text": RUN_BUTTON}]], "resize_keyboard": True, "is_persistent": True}
 
 
+def pending_token(pending: dict[str, dict]) -> str:
+    """Short fingerprint of the waiting runs; fits Telegram's 64-byte callback data."""
+    return hashlib.sha1(",".join(sorted(pending)).encode()).hexdigest()[:12]
+
+
 class OrderBot:
     def __init__(self, tg: Telegram, allowed: frozenset[int],
                  runner: Callable[[], RunResult] = run_orders,
-                 mark: Callable[[tuple[str, ...]], int] = mark_shared):
+                 mark: Callable[[tuple[str, ...]], int] = mark_shared,
+                 pending_file: Path = PENDING_FILE):
         self.tg, self.allowed, self.runner, self.mark = tg, allowed, runner, mark
-        self.pending: dict[str, tuple[str, ...]] = {}  # run id -> product order ids awaiting [공유 완료]
+        self.pending_file = pending_file  # runs awaiting [공유 완료]; a file so a restart keeps them
+
+    @property
+    def pending(self) -> dict[str, dict]:
+        return read_pending(self.pending_file)
+
+    def _save_pending(self, pending: dict[str, dict]) -> None:
+        write_pending(pending, self.pending_file)
 
     def handle(self, update: dict) -> None:
         if "callback_query" in update:
@@ -110,7 +135,10 @@ class OrderBot:
             self.tg.send(chat, f"이 대화방 번호는 {chat} 입니다. 개발자에게 알려 주세요.")
             return
         if message.get("text") == RUN_BUTTON:
-            self._run(chat)
+            if self.pending:
+                self._ask_about_pending(chat)
+            else:
+                self._run(chat)
         else:
             self.tg.send(chat, f"아래 [{RUN_BUTTON}] 버튼을 누르면 새 주문으로 발주서를 만듭니다.",
                          reply_markup=run_keyboard())
@@ -128,27 +156,67 @@ class OrderBot:
         extra: dict = {"reply_markup": run_keyboard()}
         if run.product_order_ids:
             run_id = uuid.uuid4().hex[:12]
-            self.pending = {**self.pending, run_id: run.product_order_ids}
+            entry = {"ids": list(run.product_order_ids), "when": f"{run.when:%m/%d %H:%M}"}
+            self._save_pending({**self.pending, run_id: entry})
             button = {"text": "✅ 카톡 공유 완료", "callback_data": f"{DONE_PREFIX}{run_id}"}
             extra = {"reply_markup": {"inline_keyboard": [[button]]}}
         self.tg.send(chat, summary(run), **extra)
 
+    def _ask_about_pending(self, chat: int) -> None:
+        """A run is still unconfirmed: settle it first, or its orders would land on two purchase orders."""
+        waiting = self.pending
+        count = len({i for entry in waiting.values() for i in entry["ids"]})
+        whens = ", ".join(entry["when"] for entry in waiting.values())
+        token = pending_token(waiting)
+        buttons = [[{"text": "✅ 보냈음 → 기록하고 새 주문만", "callback_data": f"{PENDING_SENT}{token}"}],
+                   [{"text": "↩️ 안 보냈음 → 그 주문까지 다시 만들기", "callback_data": f"{PENDING_REDO}{token}"}]]
+        self.tg.send(chat, f"⚠️ 지난 발주서({whens}, 주문 {count}건)가 아직 [카톡 공유 완료] 처리되지 않았습니다.\n"
+                           "그 발주서를 카톡으로 보냈나요?", reply_markup={"inline_keyboard": buttons})
+
     def _on_button(self, query: dict) -> None:
         chat = query["message"]["chat"]["id"]
         data = query.get("data", "")
-        if chat not in self.allowed or not data.startswith(DONE_PREFIX):
+        if chat not in self.allowed:
             return
-        ids = self.pending.get(data.removeprefix(DONE_PREFIX))
-        self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
-        if ids is None:
+        if data.startswith((PENDING_SENT, PENDING_REDO)):
+            self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
+            token = data.removeprefix(PENDING_SENT).removeprefix(PENDING_REDO)
+            self._settle_pending(chat, query, token, sent=data.startswith(PENDING_SENT))
+        elif data.startswith(DONE_PREFIX):
+            self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
+            self._confirm_run(chat, query, data.removeprefix(DONE_PREFIX))
+
+    def _clear_buttons(self, chat: int, query: dict) -> None:
+        try:
+            self.tg.call("editMessageReplyMarkup", chat_id=chat, message_id=query["message"]["message_id"],
+                         reply_markup={"inline_keyboard": []})
+        except RuntimeError:  # already cleared (a double tap): the reply below matters more
+            log.info("버튼 지우기 생략: message %s", query["message"]["message_id"])
+
+    def _confirm_run(self, chat: int, query: dict, run_id: str) -> None:
+        waiting = self.pending
+        if run_id not in waiting:
             self.tg.send(chat, "이 버튼은 만료됐습니다. 필요하면 다시 [발주 처리]를 눌러 주세요.")
             return
-        added = self.mark(ids)
-        self.pending = {k: v for k, v in self.pending.items() if v is not ids}
-        self.tg.call("editMessageReplyMarkup", chat_id=chat, message_id=query["message"]["message_id"],
-                     reply_markup={"inline_keyboard": []})
+        added = self.mark(tuple(waiting[run_id]["ids"]))
+        self._save_pending({k: v for k, v in waiting.items() if k != run_id})
+        self._clear_buttons(chat, query)
         self.tg.send(chat, f"✅ 주문 {added}건을 공유 완료로 기록했습니다. 다음 [발주 처리]에서는 빠집니다.",
                      reply_markup=run_keyboard())
+
+    def _settle_pending(self, chat: int, query: dict, token: str, sent: bool) -> None:
+        waiting = self.pending
+        self._clear_buttons(chat, query)
+        if not waiting or pending_token(waiting) != token:
+            self.tg.send(chat, "이미 처리된 질문입니다.", reply_markup=run_keyboard())
+            return
+        if sent:
+            added = self.mark(tuple(sorted({i for entry in waiting.values() for i in entry["ids"]})))
+            self.tg.send(chat, f"✅ 지난 주문 {added}건을 공유 완료로 기록했습니다. 새 주문만 가져옵니다.")
+        else:
+            self.tg.send(chat, "↩️ 지난 발주서 파일은 버려 주세요. 그 주문까지 포함해 새로 만듭니다.")
+        self._save_pending({})
+        self._run(chat)
 
 
 def poll_forever(bot: OrderBot) -> None:
