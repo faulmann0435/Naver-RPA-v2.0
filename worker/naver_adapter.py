@@ -57,7 +57,7 @@ COLUMN_ORDER = (
 
 STATUS_LABELS: dict[str, str] = {
     "PAYMENT_WAITING": "결제대기",
-    "PAYED": "결제완료",
+    "PAYED": "발송대기",  # what the Excel export shows for a paid, not yet shipped order
     "DELIVERING": "배송중",
     "DELIVERED": "배송완료",
     "PURCHASE_DECIDED": "구매확정",
@@ -66,6 +66,9 @@ STATUS_LABELS: dict[str, str] = {
     "RETURNED": "반품",
     "CANCELED_BY_NOPAYMENT": "미결제취소",
 }
+
+
+SHIPPABLE_STATUS = "PAYED"
 
 
 class AdapterError(ValueError):
@@ -112,7 +115,7 @@ def _kst_naive(value) -> datetime | None:
     parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(KST).replace(tzinfo=None)
-    return parsed
+    return parsed.replace(microsecond=0)  # the Excel export shows whole seconds
 
 
 def _to_int(column: str, value) -> int:
@@ -137,6 +140,18 @@ def _typed(frame: pd.DataFrame) -> pd.DataFrame:
         else:
             columns[name] = values.map(lambda v: np.nan if v is None else v).astype(object)
     return pd.DataFrame(columns, index=frame.index)
+
+
+def is_shippable(item: Mapping) -> bool:
+    """Paid, not yet shipped, and no cancel/return/exchange request on it."""
+    product_order = item.get("productOrder") or {}
+    return product_order.get("productOrderStatus") == SHIPPABLE_STATUS and _blank(product_order.get("claimType"))
+
+
+def split_shippable(items: Iterable[Mapping]) -> tuple[list[Mapping], list[Mapping]]:
+    """(orders to put on purchase orders, orders left out because of their status or a claim)."""
+    listed = list(items)
+    return [i for i in listed if is_shippable(i)], [i for i in listed if not is_shippable(i)]
 
 
 def details_to_dataframe(items: Iterable[Mapping]) -> pd.DataFrame:

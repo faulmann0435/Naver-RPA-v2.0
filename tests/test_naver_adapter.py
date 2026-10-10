@@ -2,7 +2,12 @@
 import pandas as pd
 import pytest
 
-from worker.naver_adapter import COLUMN_ORDER, AdapterError, details_to_dataframe
+from worker.naver_adapter import (
+    COLUMN_ORDER,
+    AdapterError,
+    details_to_dataframe,
+    split_shippable,
+)
 from worker.simulator import excel_to_api_items
 
 
@@ -70,7 +75,7 @@ def test_blank_values_become_nan_like_empty_excel_cells():
 
 
 def test_status_code_is_shown_in_korean():
-    assert details_to_dataframe([_item()]).loc[0, "주문상태"] == "결제완료"
+    assert details_to_dataframe([_item()]).loc[0, "주문상태"] == "발송대기"
 
 
 def test_missing_product_order_id_is_refused():
@@ -99,3 +104,19 @@ def test_simulator_round_trip_keeps_engine_columns():
     original = details_to_dataframe([_item(), _item(productOrderId="2026012151232692", quantity=1)])
     again = details_to_dataframe(excel_to_api_items(original))
     pd.testing.assert_frame_equal(original, again)
+
+
+def test_payment_time_drops_milliseconds_like_the_excel_export():
+    item = _item()
+    item = {**item, "order": {**item["order"], "paymentDate": "2026-01-21T16:27:55.873+09:00"}}
+    assert details_to_dataframe([item]).loc[0, "결제일"] == pd.Timestamp("2026-01-21 16:27:55")
+
+
+def test_only_paid_orders_without_claims_are_shipped():
+    paid = _item()
+    canceled = _item(productOrderId="2", productOrderStatus="CANCELED", claimType="CANCEL")
+    cancel_requested = _item(productOrderId="3", claimType="CANCEL", claimStatus="CANCEL_REQUEST")
+    shipped = _item(productOrderId="4", productOrderStatus="DELIVERING")
+    keep, left_out = split_shippable([paid, canceled, cancel_requested, shipped])
+    assert keep == [paid]
+    assert left_out == [canceled, cancel_requested, shipped]
