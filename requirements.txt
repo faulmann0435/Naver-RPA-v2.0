@@ -5,3 +5,4 @@ streamlit==1.55.0
 msoffcrypto-tool>=5.0
 requests>=2.31
 bcrypt>=4.1
+anthropic>=1.13
