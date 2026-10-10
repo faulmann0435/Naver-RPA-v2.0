@@ -106,7 +106,7 @@ def _windows(start: datetime, end: datetime) -> list[tuple[datetime, datetime]]:
     return edges
 
 
-def fetch_changed_ids(token: str, start: datetime, end: datetime, changed_type: str = "PAYED",
+def fetch_changed_ids(token: str, start: datetime, end: datetime, changed_type: str | None = "PAYED",
                       session: requests.Session | None = None) -> list[str]:
     """Product order ids whose status changed to `changed_type` between start and end (oldest first)."""
     http = session or requests.Session()
