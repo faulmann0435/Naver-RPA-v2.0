@@ -42,7 +42,7 @@ class Credentials:
     client_secret: str
 
 
-def _read_env_file(path: Path) -> dict[str, str]:
+def read_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     pairs = (line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines() if "=" in line)
@@ -51,7 +51,7 @@ def _read_env_file(path: Path) -> dict[str, str]:
 
 def load_credentials(env_file: Path = ENV_FILE) -> Credentials:
     """Keys from the environment first, then the .env file; fail clearly when missing."""
-    file_values = _read_env_file(env_file)
+    file_values = read_env_file(env_file)
     pick = lambda key: os.environ.get(key) or file_values.get(key, "")
     creds = Credentials(pick("NAVER_COMMERCE_CLIENT_ID"), pick("NAVER_COMMERCE_CLIENT_SECRET"))
     if not creds.client_id or not creds.client_secret:
