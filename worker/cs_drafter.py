@@ -17,14 +17,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tests.regression_harness import REPO_ROOT
 from worker.naver_adapter import KST
 from worker.naver_client import ENV_FILE, read_env_file
 from worker.order_link import LinkResult, to_prompt_text
+from worker.paths import DATA_DIR
 
 DEFAULT_MODEL = "claude-sonnet-5-5"
 MODEL_KEY, DOC_KEY, API_KEY = "CS_MODEL", "CS_STORE_DOC", "ANTHROPIC_API_KEY"
-DEFAULT_DOC = REPO_ROOT.parent / "CS자료" / "가게정보_v2.md"
+DEFAULT_DOC = DATA_DIR / "CS자료" / "가게정보_v2.md"
 MAX_TOKENS = 4096  # the model thinks before answering; 1024 cut replies off mid-JSON
 KINDS = ("배송 일정", "상품 정보", "보관·조리", "취소·변경", "불만·클레임", "기타")
 ROUTE_AI, ROUTE_HUMAN = "AI답변", "사람에게"

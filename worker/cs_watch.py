@@ -28,7 +28,6 @@ from typing import Any
 
 import requests
 
-from tests.regression_harness import REPO_ROOT
 from worker.cs_alert import NO_AI_NOTE, format_alert, trim
 from worker.cs_drafter import (
     DraftError,
@@ -52,6 +51,7 @@ from worker.order_link import (
     missing_inquiry_ids,
     parse_time,
 )
+from worker.paths import DATA_DIR
 from worker.telegram_bot import BotSettings, Telegram
 
 CS_DIR_NAME, STATE_DIR_NAME = "CS자료", "알림기록"
@@ -103,7 +103,7 @@ class Item:
 
 def default_state_dir() -> Path:
     override = os.environ.get(STATE_DIR_KEY) or read_env_file(ENV_FILE).get(STATE_DIR_KEY, "")
-    return Path(override) if override else REPO_ROOT.parent / CS_DIR_NAME / STATE_DIR_NAME
+    return Path(override) if override else DATA_DIR / CS_DIR_NAME / STATE_DIR_NAME
 
 
 def load_state(state_dir: Path) -> tuple[dict[str, dict], bool]:

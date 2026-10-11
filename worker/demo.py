@@ -21,16 +21,15 @@ from core.loader import load_excel
 from core.merger import filter_instruction_rows
 from core.pipeline import process_all_data
 from tests.regression_harness import (
-    CONFIG_PATH,
     DEMO_DIR_NAME,
-    REPO_ROOT,
     _cells,
     _read_order,
 )
 from worker.naver_adapter import COLUMN_ORDER, KST, details_to_dataframe
+from worker.paths import CONFIG_PATH, DATA_DIR
 from worker.simulator import excel_to_api_items
 
-DEFAULT_OUT = REPO_ROOT.parent / DEMO_DIR_NAME
+DEFAULT_OUT = DATA_DIR / DEMO_DIR_NAME
 
 
 def _same_columns(excel_df: pd.DataFrame, api_df: pd.DataFrame) -> list[str]:

@@ -24,16 +24,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from tests.regression_harness import REPO_ROOT
 from worker.compare import CompareResult, compare_file
 from worker.naver_adapter import KST
 from worker.naver_client import ENV_FILE, read_env_file
+from worker.paths import DATA_DIR
 
 DEFAULT_FOLDER = Path.home() / "Downloads"
 PATTERN = "스마트스토어_*.xlsx"
 POLL_SECONDS = 10
 SETTLE_SECONDS = 5  # a file untouched this long has finished downloading
-OUT_DIR = REPO_ROOT.parent / "자동대조"
+OUT_DIR = DATA_DIR / "자동대조"
 STATE_FILE = OUT_DIR / "처리기록.json"
 PASSWORD_KEY = "RPA_ORDER_PASSWORD"
 FOLDER_KEY = "RPA_DOWNLOAD_FOLDER"

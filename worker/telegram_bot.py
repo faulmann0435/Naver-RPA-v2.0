@@ -12,8 +12,10 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import logging.handlers
 import os
 import sys
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,6 +24,7 @@ from pathlib import Path
 import requests
 
 from worker.naver_client import ENV_FILE, read_env_file
+from worker import single_instance
 from worker.order_run import (
     PENDING_FILE,
     RunResult,
@@ -31,6 +34,7 @@ from worker.order_run import (
     summary,
     write_pending,
 )
+from worker.paths import DATA_DIR
 
 API = "https://api.telegram.org/bot{token}/{method}"
 RUN_BUTTON = "📦 발주 처리"
@@ -41,6 +45,12 @@ POLL_TIMEOUT = 30
 HTTP_TIMEOUT = POLL_TIMEOUT + 10
 TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
 CHATS_KEY = "TELEGRAM_ALLOWED_CHAT_IDS"
+BACKOFF_START, BACKOFF_MAX = 5, 60  # seconds to wait after a failed getUpdates, doubling up to the max
+LOCK_NAME = "telegram_bot"
+LOG_FILE_NAME = "telegram_bot.log"
+LOG_MAX_BYTES, LOG_BACKUPS = 1_000_000, 5
+IP_NOT_ALLOWED = "IP_NOT_ALLOWED"  # Naver gateway: this PC's public IP is not registered
+CONFLICT_MARK = "Conflict"  # Telegram: another getUpdates is running (a second copy of the bot)
 
 log = logging.getLogger("telegram_bot")
 
@@ -98,6 +108,15 @@ class TelegramNotifier:
             self._tg.send(chat, text)
 
 
+def failure_message(exc: Exception) -> str:
+    """What the owner sees when a run fails; known causes get a plain-language hint."""
+    text = f"⚠️ 발주 처리 실패: {type(exc).__name__}: {str(exc)[:300]}"
+    if IP_NOT_ALLOWED in str(exc):
+        text += ("\n\n이 PC의 인터넷 주소(IP)가 바뀌어 네이버가 막았습니다. "
+                 "커머스API센터에서 이 PC의 새 IP를 등록해야 합니다. 개발자에게 알려 주세요.")
+    return text
+
+
 def run_keyboard() -> dict:
     return {"keyboard": [[{"text": RUN_BUTTON}]], "resize_keyboard": True, "is_persistent": True}
 
@@ -149,7 +168,7 @@ class OrderBot:
             run = self.runner()
         except Exception as exc:  # report every failure to the owner instead of going silent
             log.exception("발주 처리 실패")
-            self.tg.send(chat, f"⚠️ 발주 처리 실패: {type(exc).__name__}: {str(exc)[:300]}")
+            self.tg.send(chat, failure_message(exc))
             return
         for f in run.files:
             self.tg.send_file(chat, f["filename"], f["data"].getvalue())
@@ -219,14 +238,24 @@ class OrderBot:
         self._run(chat)
 
 
-def poll_forever(bot: OrderBot) -> None:
+def poll_forever(bot: OrderBot, sleep: Callable[[float], None] = time.sleep) -> None:
     offset = 0
+    delay = 0
+    conflict_logged = False
     while True:
         try:
             updates = bot.tg.call("getUpdates", offset=offset, timeout=POLL_TIMEOUT)
-        except (requests.RequestException, RuntimeError):
-            log.exception("텔레그램 연결 실패, 다시 시도")
+        except (requests.RequestException, RuntimeError) as exc:
+            if CONFLICT_MARK in str(exc):
+                if not conflict_logged:
+                    log.warning("다른 곳에서 같은 봇이 실행 중입니다. 다른 PC나 창을 끄세요. (%s)", exc)
+                    conflict_logged = True
+            else:
+                log.exception("텔레그램 연결 실패, 다시 시도")
+            delay = BACKOFF_START if delay == 0 else min(delay * 2, BACKOFF_MAX)
+            sleep(delay)
             continue
+        delay, conflict_logged = 0, False
         for update in updates:
             offset = update["update_id"] + 1
             try:
@@ -235,15 +264,40 @@ def poll_forever(bot: OrderBot) -> None:
                 log.exception("처리 실패: update %s", update.get("update_id"))
 
 
+def setup_logging(log_dir: Path | None) -> None:
+    """Log to the console when there is one (pythonw has none) and, given a folder, to a rotating file."""
+    handlers: list[logging.Handler] = []
+    if sys.stderr is not None:
+        handlers.append(logging.StreamHandler())
+    if log_dir is not None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.handlers.RotatingFileHandler(
+            log_dir / LOG_FILE_NAME, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS, encoding="utf-8"))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", handlers=handlers)
+
+
 def main() -> int:
-    if isinstance(sys.stdout, io.TextIOWrapper):
+    if isinstance(sys.stdout, io.TextIOWrapper):  # None under pythonw
         sys.stdout.reconfigure(encoding="utf-8")
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    settings = BotSettings.load()
-    bot = OrderBot(Telegram(settings.token), settings.allowed_chats)
-    me = bot.tg.call("getMe")
-    log.info("봇 @%s 시작 (허용된 대화방 %d개). 끄려면 Ctrl+C", me["username"], len(settings.allowed_chats))
-    poll_forever(bot)
+    record_dir = DATA_DIR / "발주기록"
+    try:
+        lock = single_instance.acquire(LOCK_NAME, record_dir)
+    except single_instance.AlreadyRunning:
+        setup_logging(None)  # leave the running copy's log file alone
+        log.error("발주봇이 이미 실행 중입니다. 새로 시작하지 않습니다.")
+        return 1
+    with lock:
+        setup_logging(record_dir / "로그")
+        try:
+            settings = BotSettings.load()
+            bot = OrderBot(Telegram(settings.token), settings.allowed_chats)
+            me = bot.tg.call("getMe")
+            log.info("봇 @%s 시작 (허용된 대화방 %d개). 끄려면 Ctrl+C", me["username"], len(settings.allowed_chats))
+            poll_forever(bot)
+        except BaseException as exc:  # under pythonw the log file is the only place a crash shows up
+            if not isinstance(exc, KeyboardInterrupt):
+                log.exception("봇이 멈췄습니다 (작업 스케줄러가 1분 뒤 다시 시작)")
+            raise
     return 0
 
 

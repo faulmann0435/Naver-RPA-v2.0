@@ -21,7 +21,6 @@ from core.pipeline import ProcessResult, process_orders
 from store.dictionary_repo import load_state
 from store.github_store import GitHubStore
 from store.rules_repo import load_config_from_store
-from tests.regression_harness import CONFIG_PATH, REPO_ROOT
 from worker.naver_adapter import KST, details_to_dataframe, split_shippable
 from worker.naver_client import (
     fetch_changed_ids,
@@ -29,11 +28,12 @@ from worker.naver_client import (
     fetch_token,
     load_credentials,
 )
+from worker.paths import CONFIG_PATH, DATA_DIR, REPO_ROOT
 
 CONFIG_PASSWORD = "1111"  # protects config.xlsx sheets against accidental edits, not a secret
 SECRETS_FILE = REPO_ROOT / ".streamlit" / "secrets.toml"
-LEDGER_FILE = REPO_ROOT.parent / "발주기록" / "공유완료_주문.json"
-PENDING_FILE = REPO_ROOT.parent / "발주기록" / "공유대기_발주.json"
+LEDGER_FILE = DATA_DIR / "발주기록" / "공유완료_주문.json"
+PENDING_FILE = DATA_DIR / "발주기록" / "공유대기_발주.json"
 LOOKBACK_DAYS = 14  # covers a long holiday; the ledger keeps the overlap from being sent twice
 
 

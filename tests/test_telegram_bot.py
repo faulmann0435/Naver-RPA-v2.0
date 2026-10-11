@@ -160,3 +160,58 @@ def test_answering_twice_does_not_run_twice(pending):
     bot.handle(_press(sent))  # double tap: must not record the new run it just made
     assert len(runs) == 1 and "이미 처리된" in tg.texts()[-1]
     assert [e["ids"] for e in bot.pending.values()] == [["1", "2"]]
+
+
+# --- poll_forever backoff -----------------------------------------------------------------------
+
+class _Stop(Exception):
+    """Raised by the fake to end the endless loop."""
+
+
+class _ScriptedTelegram:
+    def __init__(self, script):
+        self._script = list(script)
+
+    def call(self, method, **params):
+        step = self._script.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+def _poll(script):
+    from worker.telegram_bot import poll_forever
+
+    sleeps: list[float] = []
+    bot = OrderBot(_ScriptedTelegram(script), frozenset())
+    with pytest.raises(_Stop):
+        poll_forever(bot, sleep=sleeps.append)
+    return sleeps
+
+
+def test_poll_backs_off_and_caps():
+    fail = RuntimeError("Telegram getUpdates: network down")
+    assert _poll([fail] * 7 + [_Stop()]) == [5, 10, 20, 40, 60, 60, 60]
+
+
+def test_poll_backoff_resets_after_success():
+    fail = RuntimeError("down")
+    assert _poll([fail, fail, [], fail, _Stop()]) == [5, 10, 5]
+
+
+def test_poll_conflict_is_warned_once(caplog):
+    conflict = RuntimeError("Telegram getUpdates: Conflict: terminated by other getUpdates request")
+    with caplog.at_level("WARNING", logger="telegram_bot"):
+        sleeps = _poll([conflict] * 3 + [_Stop()])
+    assert sleeps == [5, 10, 20]
+    assert len([r for r in caplog.records if "실행 중" in r.message]) == 1
+    assert all(r.exc_info is None for r in caplog.records)
+
+
+def test_failure_message_explains_ip_not_allowed():
+    from worker.naver_client import NaverApiError
+    from worker.telegram_bot import failure_message
+
+    text = failure_message(NaverApiError("HTTP 403: GW.IP_NOT_ALLOWED 호출이 허용되지 않은 IP입니다."))
+    assert "IP_NOT_ALLOWED" in text and "새 IP를 등록" in text
+    assert "새 IP" not in failure_message(RuntimeError("boom"))

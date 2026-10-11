@@ -16,7 +16,6 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from tests.regression_harness import REPO_ROOT
 from worker.inquiry_client import fetch_customer_inquiries, fetch_qnas
 from worker.naver_adapter import KST
 from worker.naver_client import NaverApiError, fetch_details, fetch_token, load_credentials
@@ -30,6 +29,7 @@ from worker.order_link import (
     missing_inquiry_ids,
     parse_time,
 )
+from worker.paths import DATA_DIR
 
 CS_DIR_NAME = "CS자료"
 CHANNEL_QNA, CHANNEL_INQUIRY = "상품문의", "고객문의"
@@ -95,7 +95,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"조회 기간: {start} ~ {end} (주문 조회 {args.lookback}일, 주문 {len(details)}건)")
     for record in records:
         print(console_line(record))
-    out_dir = args.out or REPO_ROOT.parent / CS_DIR_NAME / f"주문연결_{now:%Y%m%d_%H%M%S}"
+    out_dir = args.out or DATA_DIR / CS_DIR_NAME / f"주문연결_{now:%Y%m%d_%H%M%S}"
     print(f"저장: {save(out_dir, records)}")
     return 0
 

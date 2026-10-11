@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 
 from core.config_loader import load_config
 from core.pipeline import process_all_data
-from tests.regression_harness import CONFIG_PATH, DEMO_DIR_NAME, REPO_ROOT
+from tests.regression_harness import DEMO_DIR_NAME
 from worker.naver_adapter import KST, details_to_dataframe, split_shippable
 from worker.naver_client import (
     fetch_changed_ids,
@@ -25,6 +25,7 @@ from worker.naver_client import (
     fetch_token,
     load_credentials,
 )
+from worker.paths import CONFIG_PATH, DATA_DIR
 
 
 def shape(value) -> str:
@@ -77,7 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     for line in report(items):
         print(f"  · {line}")
 
-    out_dir = REPO_ROOT.parent / DEMO_DIR_NAME / f"실제조회_{now:%Y%m%d_%H%M%S}"
+    out_dir = DATA_DIR / DEMO_DIR_NAME / f"실제조회_{now:%Y%m%d_%H%M%S}"
     (out_dir / "발주서").mkdir(parents=True, exist_ok=True)
     (out_dir / "네이버API_응답.json").write_text(json.dumps({"data": items}, ensure_ascii=False, indent=2),
                                              encoding="utf-8")

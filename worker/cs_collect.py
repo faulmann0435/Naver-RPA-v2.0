@@ -15,10 +15,10 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from tests.regression_harness import REPO_ROOT
 from worker.inquiry_client import fetch_customer_inquiries, fetch_qnas
 from worker.naver_adapter import KST
 from worker.naver_client import fetch_token, load_credentials
+from worker.paths import DATA_DIR
 
 CS_DIR_NAME = "CS자료"
 TOP_PRODUCTS = 10
@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"조회 기간: {start} ~ {end}")
     for line in summarize_qnas(qnas) + summarize_inquiries(inquiries):
         print(line)
-    out_dir = REPO_ROOT.parent / CS_DIR_NAME / f"문의수집_{now:%Y%m%d_%H%M%S}"
+    out_dir = DATA_DIR / CS_DIR_NAME / f"문의수집_{now:%Y%m%d_%H%M%S}"
     save(out_dir, qnas, inquiries)
     print(f"원본 저장: {out_dir}")
     return 0
