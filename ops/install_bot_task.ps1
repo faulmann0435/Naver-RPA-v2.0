@@ -1,15 +1,17 @@
 ﻿# Registers the Telegram order bot as a Task Scheduler task that starts at logon.
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '_common.ps1')
 $taskName = '발주봇'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
-$python = Get-Command python -ErrorAction SilentlyContinue
-if (-not $python) {
-    Write-Host 'python을 찾을 수 없습니다. Python을 설치하고 PATH에 추가한 뒤 다시 실행하세요.' -ForegroundColor Red
+# Ask Python itself where it lives: `Get-Command python` can return the Microsoft Store stub.
+$py = Get-PythonInfo
+if (-not $py.Ok) {
+    Write-Host "$($py.Problem) python.org에서 설치하고 'Add python.exe to PATH'를 체크한 뒤 다시 실행하세요." -ForegroundColor Red
     exit 1
 }
-$pythonw = Join-Path (Split-Path $python.Source) 'pythonw.exe'
-if (-not (Test-Path $pythonw)) {
+$pythonw = Join-Path (Split-Path -Parent $py.Path) 'pythonw.exe'
+if (-not (Test-Path -LiteralPath $pythonw)) {
     Write-Host "pythonw.exe를 찾을 수 없습니다: $pythonw" -ForegroundColor Red
     exit 1
 }

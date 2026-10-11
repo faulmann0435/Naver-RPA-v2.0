@@ -2,9 +2,20 @@
 
 PC에 로그인하면 텔레그램 발주봇이 저절로 켜지고, 꺼지면 1분 뒤 다시 켜집니다.
 
-## 설치
-1. 이 폴더의 `install_bot_task.ps1`을 우클릭 → "PowerShell에서 실행".
-2. "등록했고 지금 한 번 시작했습니다"가 나오면 끝입니다.
+## 처음 설치 (사장님 PC)
+1. 저장소 ZIP을 `C:\`에 풀면 `C:\Naver-RPA-v2.0-order-bot-test` 가 생깁니다.
+2. 그 폴더의 `설치.bat`을 더블클릭 -> `ops\setup_owner_pc.ps1`이 6단계로 진행합니다
+   (파이썬 확인 / 부품 설치 / IP 확인·네이버 등록 / 설정값 4개 입력 / 연결 확인 / 자동 실행 등록).
+   다시 실행해도 안전합니다. 이미 있는 값은 Enter로 그대로 둡니다.
+3. 텔레그램에서 봇에게 [시작] -> 봇이 알려 준 대화방 번호를 `대화방추가.bat`(`ops\add_chat_id.ps1`)에 입력.
+
+값의 출처: 애플리케이션 ID·시크릿은 커머스API센터, 봇 토큰은 @BotFather, GitHub 토큰만 개발자.
+봇에는 `requirements-bot.txt`(streamlit/anthropic 제외)만 설치합니다.
+`ops\_common.ps1`은 공용 함수(.env 읽기/쓰기, 파이썬 찾기), `ops\check_naver.py`는 네이버 토큰 시험입니다.
+
+## 작업 스케줄러만 따로 등록
+`install_bot_task.ps1`을 우클릭 -> "PowerShell에서 실행". 파이썬 경로는 `python` 자신에게 물어 찾습니다
+(Microsoft Store용 가짜 python은 건너뜁니다).
 
 ## 삭제
 `uninstall_bot_task.ps1`을 같은 방법으로 실행합니다.

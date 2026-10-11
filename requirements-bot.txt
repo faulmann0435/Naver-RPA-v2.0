@@ -1,0 +1,8 @@
+# Only what the Telegram order bot (python -m worker.telegram_bot) imports.
+# Same pins as requirements.txt, minus streamlit (web UI) and anthropic (CS drafts), which the bot never loads.
+pandas==2.3.3
+openpyxl==3.1.5
+xlsxwriter==3.2.9
+msoffcrypto-tool>=5.0
+requests>=2.31
+bcrypt>=4.1
