@@ -56,11 +56,22 @@ function Update-EnvFile([string]$Path, [System.Collections.IDictionary]$Updates)
     Write-Utf8NoBom $Path (($lines -join "`r`n") + "`r`n")
 }
 
+# Pinned packages (pandas, numpy) ship ready-made Windows wheels only up to this version.
+# A newer Python makes pip compile them from source, which needs Visual Studio -> install fails.
+$script:PyMinMinor = 11
+$script:PyMaxMinor = 14
+$script:PyRecommended = '3.13'
+
 function Get-PythonInfo {
-    # Finds a real Python >= 3.11. Rejects the Microsoft Store stub (it lives under WindowsApps).
+    # Finds a real Python 3.11-3.14. Rejects the Microsoft Store stub (it lives under WindowsApps).
+    # Specific versions are tried first, so a supported one wins even when the default 'python' is newer.
     $ErrorActionPreference = 'Continue'
     $problem = 'python을 찾을 수 없습니다.'
     $candidates = @(
+        @{ Exe = 'py'; Args = @('-V:3.13') },
+        @{ Exe = 'py'; Args = @('-V:3.12') },
+        @{ Exe = 'py'; Args = @('-V:3.14') },
+        @{ Exe = 'py'; Args = @('-V:3.11') },
         @{ Exe = 'python'; Args = @() },
         @{ Exe = 'py'; Args = @('-3') }
     )
@@ -78,11 +89,23 @@ function Get-PythonInfo {
             continue
         }
         $major = [int]$out[1]; $minor = [int]$out[2]
-        if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 11)) {
-            $problem = "파이썬 버전이 낮습니다 ($major.$minor). 3.11 이상이 필요합니다."
+        if ($major -lt 3 -or ($major -eq 3 -and $minor -lt $script:PyMinMinor)) {
+            $problem = "파이썬 버전이 낮습니다 ($major.$minor). 3.$($script:PyMinMinor)~3.$($script:PyMaxMinor) 이 필요합니다."
+            continue
+        }
+        if ($major -gt 3 -or $minor -gt $script:PyMaxMinor) {
+            $problem = "파이썬 버전이 너무 새것입니다 ($major.$minor). 발주봇 부품은 3.$($script:PyMaxMinor)까지만 지원합니다."
             continue
         }
         return [pscustomobject]@{ Ok = $true; Path = $path; Version = "$major.$minor"; Problem = '' }
     }
     return [pscustomobject]@{ Ok = $false; Path = ''; Version = ''; Problem = $problem }
+}
+
+function Install-RecommendedPython {
+    # The new Python install manager (python.org default since 3.14) has 'py install <ver>'.
+    # The legacy py.exe has no such command; then the caller shows manual instructions.
+    if (-not (Get-Command 'py' -ErrorAction SilentlyContinue)) { return $false }
+    & py install $script:PyRecommended
+    return ($LASTEXITCODE -eq 0)
 }

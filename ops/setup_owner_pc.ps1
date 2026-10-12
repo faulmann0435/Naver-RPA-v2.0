@@ -44,9 +44,17 @@ Write-Host "설치 폴더: $repoRoot"
 # ---- 1. Python -------------------------------------------------------------
 Show-Step 1 '파이썬 확인'
 $py = Get-PythonInfo
+if (-not $py.Ok -and $py.Problem -match '너무 새것') {
+    Show-Warn $py.Problem
+    Write-Host "  발주봇용 파이썬 $PyRecommended 을 추가로 설치합니다. 지금 있는 파이썬은 그대로 둡니다." -ForegroundColor Yellow
+    Write-Host '  (질문이 나오면 Y 또는 Enter를 누르세요. 1~2분 걸립니다)'
+    if (Install-RecommendedPython) { $py = Get-PythonInfo }
+}
 if (-not $py.Ok) {
-    Stop-Setup ("$($py.Problem)`n  python.org/downloads 에서 파이썬을 설치하세요. 설치 첫 화면에서" +
-                " 'Add python.exe to PATH'를 꼭 체크하고 Install Now를 누릅니다.`n  설치 후 이 창을 닫고 설치.bat을 다시 실행하세요.")
+    Stop-Setup ("$($py.Problem)`n  python.org/downloads/release/python-3139/ 에서 파이썬 $PyRecommended 을 설치하세요." +
+                " (맨 위 'Download Python 3.15' 큰 버튼이 아니라 3.13 버전입니다)" +
+                "`n  설치 첫 화면에서 'Add python.exe to PATH'를 꼭 체크하고 Install Now를 누릅니다." +
+                "`n  설치 후 이 창을 닫고 설치.bat을 다시 실행하세요.")
 }
 $python = $py.Path
 Show-Ok "파이썬 $($py.Version) ($python)"
