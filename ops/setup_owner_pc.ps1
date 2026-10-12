@@ -9,6 +9,8 @@ $taskName = '발주봇'
 $dataDir = 'C:\choigoda-data'
 $dataRepo = 'faulmann0435/Naver-RPA-data'
 $dataBranch = 'dev'
+# Shown on the first screen so a stale copy (old ZIP not overwritten) is easy to spot. Bump on every change.
+$SetupEdition = '2026-10-12'
 $env:PYTHONUTF8 = '1'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
@@ -39,6 +41,7 @@ function Ask-Value([string]$Label, [string]$Existing, [scriptblock]$Check, [stri
 }
 
 Write-Host '=== 발주봇 설치 ===' -ForegroundColor Cyan
+Write-Host "설치 프로그램: ${SetupEdition}판"
 Write-Host "설치 폴더: $repoRoot"
 
 # ---- 1. Python -------------------------------------------------------------
