@@ -8,11 +8,13 @@ puts an order on two purchase orders.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import requests
 import tomllib
 
 from core.config_loader import load_config
@@ -28,6 +30,7 @@ from worker.naver_client import (
     fetch_token,
     load_credentials,
 )
+from worker.order_link import RetryingSession
 from worker.paths import CONFIG_PATH, DATA_DIR, REPO_ROOT
 
 CONFIG_PASSWORD = "1111"  # protects config.xlsx sheets against accidental edits, not a secret
@@ -35,6 +38,7 @@ SECRETS_FILE = REPO_ROOT / ".streamlit" / "secrets.toml"
 LEDGER_FILE = DATA_DIR / "발주기록" / "공유완료_주문.json"
 PENDING_FILE = DATA_DIR / "발주기록" / "공유대기_발주.json"
 LOOKBACK_DAYS = 14  # covers a long holiday; the ledger keeps the overlap from being sent twice
+RETRY_SLEEP = time.sleep  # wait used between retries after Naver's rate-limit refusal (swapped in tests)
 
 
 @dataclass(frozen=True)
@@ -94,10 +98,12 @@ def write_pending(pending: dict[str, dict], path: Path = PENDING_FILE) -> None:
     path.write_text(json.dumps(pending, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def fetch_paid_items(days: int = LOOKBACK_DAYS) -> list[dict]:
+def fetch_paid_items(days: int = LOOKBACK_DAYS, session: requests.Session | None = None) -> list[dict]:
+    # One look-back is a burst of calls (one per day); Naver answers GW.RATE_LIMIT (429) to bursts.
+    http = RetryingSession(session, sleep=RETRY_SLEEP)
     now = datetime.now(KST)
-    token = fetch_token(load_credentials())
-    return fetch_details(token, fetch_changed_ids(token, now - timedelta(days=days), now))
+    token = fetch_token(load_credentials(), http)
+    return fetch_details(token, fetch_changed_ids(token, now - timedelta(days=days), now, session=http), http)
 
 
 def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
