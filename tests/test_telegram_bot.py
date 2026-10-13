@@ -4,7 +4,7 @@ import io
 import pytest
 
 from worker.order_run import RunResult, mark_shared, read_ledger, run_orders, summary
-from worker.telegram_bot import RUN_BUTTON, OrderBot
+from worker.telegram_bot import ALL_BUTTON, RUN_BUTTON, OrderBot, run_keyboard
 
 OWNER = 111
 
@@ -102,6 +102,59 @@ def test_ledger_keeps_shared_orders_out_of_the_next_run(tmp_path):
     assert run.paid == 0 and run.already_shared == 1 and run.files == []
     assert "새로 발주할 주문이 없습니다" in summary(run)
     assert read_ledger(ledger) == {"1"}
+
+
+def _paid(i, name="홍길동"):
+    return {"order": {"orderId": "9"}, "productOrder": {
+        "productOrderId": i, "productOrderStatus": "PAYED", "productName": "초벌장어 2kg", "productOption": "b",
+        "quantity": 1, "packageNumber": "7", "productId": "5",
+        "shippingAddress": {"zipCode": "12345", "name": name}}}
+
+
+def _engine():
+    return type("E", (), {"config": None, "dictionary": None, "settings": None, "source": "t"})()
+
+
+def test_summary_names_the_orders_left_out_as_already_shared(tmp_path):
+    ledger = tmp_path / "ledger.json"
+    mark_shared(("1",), ledger)
+    run = run_orders(fetch=lambda: [_paid("1", "김철수")], engine_loader=_engine, ledger=ledger)
+    assert run.shared_names == ("김철수(초벌장어 2kg)",)
+    assert "이미 공유한 주문 1건 제외: 김철수(초벌장어 2kg)" in summary(run)
+
+
+def test_include_shared_puts_ledger_orders_back_and_warns(tmp_path, monkeypatch):
+    ledger = tmp_path / "ledger.json"
+    mark_shared(("1",), ledger)
+    monkeypatch.setattr("worker.order_run.process_orders",
+                        lambda *a, **k: type("R", (), {"files": [], "stats": {}, "unmatched": []})())
+    run = run_orders(fetch=lambda: [_paid("1", "김철수"), _paid("2")], engine_loader=_engine,
+                     ledger=ledger, include_shared=True)
+    assert run.product_order_ids == ("1", "2") and run.already_shared == 1
+    text = summary(run)
+    assert "전에 공유한 주문 1건도 다시 넣음: 김철수" in text and "두 번 보내지 않게" in text
+
+
+def test_summary_cuts_long_name_lists():
+    names = tuple(f"고객{i}(상품)" for i in range(13))
+    run = RunResult(files=[], product_order_ids=(), paid=0, left_out_claims=0, already_shared=13,
+                    unmatched=0, needs_review=0, source="t", shared_names=names)
+    assert "외 3건" in summary(run) and "고객12" not in summary(run)
+
+
+def test_keyboard_has_both_run_buttons():
+    assert [b["text"] for b in run_keyboard()["keyboard"][0]] == [RUN_BUTTON, ALL_BUTTON]
+
+
+def test_all_button_runs_everything_without_the_pending_question(pending):
+    tg, marked = FakeTelegram(), []
+    everything = _run(("1", "2", "3"))
+    bot = OrderBot(tg, frozenset({OWNER}), runner=lambda: _run(), all_runner=lambda: everything,
+                   mark=lambda ids: marked.append(ids) or len(ids), pending_file=pending)
+    bot.handle(_message(OWNER, RUN_BUTTON))  # leaves an unconfirmed run
+    bot.handle(_message(OWNER, ALL_BUTTON))
+    assert "아직 [카톡 공유 완료]" not in tg.texts()[-1]
+    assert sorted(len(e["ids"]) for e in bot.pending.values()) == [2, 3]
 
 
 def _bot(tg, pending, runs, marked):

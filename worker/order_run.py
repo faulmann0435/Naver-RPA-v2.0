@@ -3,13 +3,14 @@
 Uses the same rules, layouts and item dictionary as the app (the data repository named in
 .streamlit/secrets.toml), falling back to config.xlsx without a dictionary when there is none.
 Orders already marked as shared (the ledger) are left out, so pressing the button twice never
-puts an order on two purchase orders.
+puts an order on two purchase orders. include_shared=True ([📋 발송 안 된 주문 전부]) ignores the
+ledger and puts every unshipped order back, like processing the store's Excel export.
 """
 from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -38,6 +39,8 @@ SECRETS_FILE = REPO_ROOT / ".streamlit" / "secrets.toml"
 LEDGER_FILE = DATA_DIR / "발주기록" / "공유완료_주문.json"
 PENDING_FILE = DATA_DIR / "발주기록" / "공유대기_발주.json"
 LOOKBACK_DAYS = 14  # covers a long holiday; the ledger keeps the overlap from being sent twice
+ALL_LOOKBACK_DAYS = 30  # [발송 안 된 주문 전부] also reaches pre-orders paid long before shipping
+MAX_NAMES = 10  # recipients listed in the summary before "외 N건"
 RETRY_SLEEP = time.sleep  # wait used between retries after Naver's rate-limit refusal (swapped in tests)
 
 
@@ -60,6 +63,8 @@ class RunResult:
     needs_review: int
     source: str
     when: datetime = field(default_factory=lambda: datetime.now(KST))
+    shared_names: tuple[str, ...] = ()  # recipients of the ledger orders (left out, or put back)
+    include_shared: bool = False
 
 
 def load_engine(secrets_file: Path = SECRETS_FILE) -> Engine:
@@ -106,14 +111,23 @@ def fetch_paid_items(days: int = LOOKBACK_DAYS, session: requests.Session | None
     return fetch_details(token, fetch_changed_ids(token, now - timedelta(days=days), now, session=http), http)
 
 
+def _recipient(item: Mapping) -> str:
+    """'name(product…)' so the owner can tell which order it is."""
+    product_order = item["productOrder"]
+    name = (product_order.get("shippingAddress") or {}).get("name") or "이름 없음"
+    return f"{name}({str(product_order.get('productName', ''))[:12]})"
+
+
 def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
                engine_loader: Callable[[], Engine] = load_engine,
-               ledger: Path = LEDGER_FILE) -> RunResult:
+               ledger: Path = LEDGER_FILE, include_shared: bool = False) -> RunResult:
     """Fetch, filter, convert and build the purchase orders. Changes nothing on the store."""
     items = fetch()
     shippable, claims = split_shippable(items)
     shared = read_ledger(ledger)
-    todo = [i for i in shippable if str(i["productOrder"]["productOrderId"]) not in shared]
+    is_shared = lambda i: str(i["productOrder"]["productOrderId"]) in shared
+    in_ledger = [i for i in shippable if is_shared(i)]
+    todo = shippable if include_shared else [i for i in shippable if not is_shared(i)]
     engine = engine_loader()
     result: ProcessResult | None = None
     if todo:
@@ -124,23 +138,45 @@ def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
         product_order_ids=tuple(str(i["productOrder"]["productOrderId"]) for i in todo),
         paid=len(todo),
         left_out_claims=len(claims),
-        already_shared=len(shippable) - len(todo),
+        already_shared=len(in_ledger),
         unmatched=0 if result is None else len(result.unmatched),
         needs_review=int(stats.get("rows_needs_review", 0)),
         source=engine.source,
+        shared_names=tuple(dict.fromkeys(_recipient(i) for i in in_ledger)),
+        include_shared=include_shared,
     )
+
+
+def run_all_unshipped() -> RunResult:
+    """[발송 안 된 주문 전부]: every unshipped order of the last ALL_LOOKBACK_DAYS, ledger ignored."""
+    return run_orders(fetch=lambda: fetch_paid_items(ALL_LOOKBACK_DAYS), include_shared=True)
+
+
+def _names(names: tuple[str, ...]) -> str:
+    shown = ", ".join(names[:MAX_NAMES])
+    return shown + (f" 외 {len(names) - MAX_NAMES}건" if len(names) > MAX_NAMES else "")
+
+
+def _shared_line(run: RunResult) -> str:
+    if run.include_shared:
+        line = f"· 전에 공유한 주문 {run.already_shared}건도 다시 넣음"
+        if run.already_shared:
+            line += f": {_names(run.shared_names)}\n  ⚠️ 이미 현장에 보낸 주문이면 두 번 보내지 않게 확인하세요."
+        return line
+    line = f"· 이미 공유한 주문 {run.already_shared}건 제외"
+    return line + (f": {_names(run.shared_names)}" if run.already_shared else "")
 
 
 def summary(run: RunResult) -> str:
     """The message that goes with the files."""
     if not run.paid:
-        return f"📭 새로 발주할 주문이 없습니다 ({run.when:%m/%d %H:%M})\n· 이미 공유한 주문 {run.already_shared}건"
+        return f"📭 새로 발주할 주문이 없습니다 ({run.when:%m/%d %H:%M})\n{_shared_line(run)}"
     warn = run.unmatched or run.needs_review
     lines = [
         f"📦 발주서 {len(run.files)}개 ({run.when:%m/%d %H:%M})",
         f"· 결제완료 {run.paid}건 반영",
         f"· 취소·반품·교환 요청으로 뺀 주문 {run.left_out_claims}건",
-        f"· 이미 공유한 주문 {run.already_shared}건 제외",
+        _shared_line(run),
         f"· {'⚠️' if run.unmatched else '✅'} 미등록 품목 {run.unmatched}건"
         + (f" · 확인 필요 {run.needs_review}줄" if run.needs_review else ""),
     ]

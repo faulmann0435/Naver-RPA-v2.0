@@ -6,6 +6,7 @@
 allowed, the bot only answers with that chat's id so it can be added. Only allowed chats can
 run anything. Nothing is sent to the delivery sites: the owner shares the files on KakaoTalk
 and taps [✅ 카톡 공유 완료], which records the orders so they are not sent twice.
+[📋 발송 안 된 주문 전부] ignores that record and puts every unshipped order back (30 days).
 
 송장: when the owner forwards the 한진 송장 xlsx, the bot matches it to the unshipped Naver orders,
 sends the filled upload xlsx and a summary with buttons. Tapping [🚚 송장 등록] registers the tracking
@@ -47,6 +48,7 @@ from worker.order_run import (
     RunResult,
     mark_shared,
     read_pending,
+    run_all_unshipped,
     run_orders,
     summary,
     write_pending,
@@ -55,6 +57,7 @@ from worker.paths import DATA_DIR
 
 API = "https://api.telegram.org/bot{token}/{method}"
 RUN_BUTTON = "📦 발주 처리"
+ALL_BUTTON = "📋 발송 안 된 주문 전부"
 DONE_PREFIX = "done:"
 PENDING_SENT = "sent:"  # + the asked-about runs, so an old question cannot settle a newer run
 PENDING_REDO = "redo:"
@@ -166,7 +169,8 @@ def dispatch_report(result: DispatchResult) -> str:
 
 
 def run_keyboard() -> dict:
-    return {"keyboard": [[{"text": RUN_BUTTON}]], "resize_keyboard": True, "is_persistent": True}
+    return {"keyboard": [[{"text": RUN_BUTTON}, {"text": ALL_BUTTON}]], "resize_keyboard": True,
+            "is_persistent": True}
 
 
 def pending_token(pending: dict[str, dict]) -> str:
@@ -177,12 +181,14 @@ def pending_token(pending: dict[str, dict]) -> str:
 class OrderBot:
     def __init__(self, tg: Telegram, allowed: frozenset[int],
                  runner: Callable[[], RunResult] = run_orders,
+                 all_runner: Callable[[], RunResult] = run_all_unshipped,
                  mark: Callable[[tuple[str, ...]], int] = mark_shared,
                  pending_file: Path = PENDING_FILE,
                  invoice_preparer: Callable[[bytes], InvoiceRun] = prepare_invoices,
                  invoice_register: Callable[..., DispatchResult] = register,
                  invoice_pending_file: Path = INVOICE_PENDING_FILE):
         self.tg, self.allowed, self.runner, self.mark = tg, allowed, runner, mark
+        self.all_runner = all_runner
         self.pending_file = pending_file  # runs awaiting [공유 완료]; a file so a restart keeps them
         self.invoice_preparer, self.invoice_register = invoice_preparer, invoice_register
         self.invoice_pending_file = invoice_pending_file  # 송장 runs awaiting a button tap
@@ -213,8 +219,11 @@ class OrderBot:
                 self._ask_about_pending(chat)
             else:
                 self._run(chat)
+        elif message.get("text") == ALL_BUTTON:
+            self._run(chat, self.all_runner)  # deliberately ignores the ledger, so no pending question
         else:
             self.tg.send(chat, f"아래 [{RUN_BUTTON}] 버튼을 누르면 새 주문으로 발주서를 만듭니다.\n"
+                               f"[{ALL_BUTTON}]은 전에 공유한 주문까지, 송장 안 들어간 주문을 모두 넣습니다.\n"
                                "한진 송장 엑셀 파일을 이 대화방에 보내면 송장을 등록합니다.",
                          reply_markup=run_keyboard())
 
@@ -247,10 +256,10 @@ class OrderBot:
         rows = [[{"text": text, "callback_data": f"{INVOICE_PREFIX}{run_id}:{code}"}] for text, code in buttons]
         return {"reply_markup": {"inline_keyboard": rows}}
 
-    def _run(self, chat: int) -> None:
+    def _run(self, chat: int, runner: Callable[[], RunResult] | None = None) -> None:
         self.tg.send(chat, "⏳ 네이버에서 주문을 가져오는 중…")
         try:
-            run = self.runner()
+            run = (runner or self.runner)()
         except Exception as exc:  # report every failure to the owner instead of going silent
             log.exception("발주 처리 실패")
             self.tg.send(chat, failure_message(exc))
