@@ -36,6 +36,7 @@ MATCHED_FILE_NAME = "송장업로드_일치_{when:%m%d_%H%M}.xlsx"
 WITH_CHECKS_FILE_NAME = "송장업로드_확인포함_{when:%m%d_%H%M}.xlsx"
 SUMMARY_LIMIT = 3800  # Telegram caps a message at 4096 characters
 ID_COLUMN = "상품주문번호"
+MAX_FAILURE_LINES = 20
 
 
 @dataclass(frozen=True)
@@ -183,3 +184,18 @@ def invoice_summary(run: InvoiceRun) -> str:
         detail += ["", "📭 송장 없는 주문"] + [f"· {o.recipient} · {o.items}" for o in result.orders_without_invoice]
     head = "\n".join(lines)
     return head + "\n" + "\n".join(_clip(detail, SUMMARY_LIMIT - len(head)))
+
+
+def dispatch_report(result: DispatchResult) -> str:
+    """What the owner reads after tapping a 송장 등록 button."""
+    lines = []
+    if result.simulated:
+        lines.append("🧪 시험 모드: 네이버에 실제로 등록하지 않았습니다 (INVOICE_DISPATCH_ENABLED 꺼짐).")
+    done = "등록했을 송장" if result.simulated else "등록 완료 송장"
+    lines.append(f"✅ {done} {len(result.success_ids)}건")
+    if result.failures:
+        lines.append(f"⚠️ 실패 {len(result.failures)}건")
+        lines += [f"· {f.id} · {f.message or f.code}" for f in result.failures[:MAX_FAILURE_LINES]]
+        if len(result.failures) > MAX_FAILURE_LINES:
+            lines.append(f"… 그 외 {len(result.failures) - MAX_FAILURE_LINES}건")
+    return "\n".join(lines)

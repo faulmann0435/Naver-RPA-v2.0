@@ -77,3 +77,32 @@ def test_several_tracking_files_at_once_and_blank_rows_table():
     outcome = logic.match_files(orders, [hanjin, supplier])
     assert sorted(a.tracking for a in outcome.result.matched()) == ["111", "222"]
     assert list(logic.no_tracking_table(outcome.result)["받는분"]) == ["(비어 있음)"]
+
+
+# --- 네이버에 바로 등록 (queue items and status lines) ---------------------------------------------
+
+def test_queue_items_use_courier_codes():
+    from store import dispatch_queue
+    outcome = logic.match_files(*_files())
+    items = logic.queue_items(outcome.result.matched())
+    assert items == [{"ids": ["1"], "tracking": "111", "courier": "HANJIN", "recipient": "홍길동"}]
+    dispatch_queue.validate_items(items)
+    assert logic.selection_key(items) == logic.selection_key(list(items))
+    assert logic.selection_key(items) != logic.selection_key(logic.queue_items(outcome.result.includable()))
+
+
+def test_status_messages():
+    now = datetime(2026, 10, 13, 9, 10, tzinfo=KST)
+    fresh = {"status": "pending", "created_at": "2026-10-13T09:09:00+09:00"}
+    assert logic.status_messages(fresh, now) == [("info", "⏳ 사장님 PC 처리 대기 중…")]
+    stale = logic.status_messages({**fresh, "created_at": "2026-10-13T09:00:00+09:00"}, now)
+    assert [level for level, _ in stale] == ["info", "warning"] and "꺼져 있거나" in stale[1][1]
+    done = {"status": "done", "result": {"simulated": True, "success_ids": ["1"],
+                                         "failures": [{"id": "2", "code": "E", "message": "주소 오류"}]}}
+    texts = [t for _, t in logic.status_messages(done, now)]
+    assert any("시험 모드" in t for t in texts) and any("등록했을 송장 1건" in t for t in texts)
+    assert "· 2 · 주소 오류" in texts
+    real = logic.status_messages({"status": "done", "result": {"success_ids": ["1", "2"]}}, now)
+    assert real == [("success", "✅ 등록 완료 2건")]
+    failed = logic.status_messages({"status": "failed", "result": {"error": "boom"}}, now)
+    assert failed == [("error", "⚠️ 등록하지 못했습니다: boom")]

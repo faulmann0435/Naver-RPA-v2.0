@@ -413,3 +413,35 @@ def test_failure_message_names_what_failed():
 
     assert failure_message(RuntimeError("x")).startswith("⚠️ 발주 처리 실패:")
     assert failure_message(RuntimeError("x"), "송장 등록").startswith("⚠️ 송장 등록 실패:")
+
+
+# --- poll_forever relay timing -------------------------------------------------------------------
+
+def test_poll_runs_relay_every_interval_and_survives_its_errors(caplog):
+    from worker.telegram_bot import RELAY_INTERVAL, poll_forever
+
+    clock = {"t": 1000.0}
+    calls: list[float] = []
+
+    def relay():
+        calls.append(clock["t"])
+        if len(calls) == 2:
+            raise RuntimeError("github down")
+
+    class _Tg:
+        def __init__(self):
+            self.n = 0
+
+        def call(self, method, **params):
+            self.n += 1
+            clock["t"] += 10  # each long poll takes 10 fake seconds
+            if self.n > 9:
+                raise _Stop()
+            return []
+
+    bot = OrderBot(_Tg(), frozenset())
+    with caplog.at_level("ERROR", logger="telegram_bot"), pytest.raises(_Stop):
+        poll_forever(bot, sleep=lambda s: None, relay=relay, clock=lambda: clock["t"])
+    assert calls[0] == 1000.0
+    assert all(b - a >= RELAY_INTERVAL for a, b in zip(calls, calls[1:]))
+    assert len(calls) == 4 and any("앱 송장 요청" in r.message for r in caplog.records)

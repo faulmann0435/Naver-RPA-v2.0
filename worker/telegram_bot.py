@@ -29,12 +29,14 @@ from pathlib import Path
 import requests
 
 from worker.dispatch_client import DispatchResult
+from worker.dispatch_relay import RELAY_INTERVAL, load_store, make_relay
 from worker.invoice_run import (
     PENDING_FILE as INVOICE_PENDING_FILE,
 )
 from worker.invoice_run import (
     InvoiceRun,
     add_pending,
+    dispatch_report,
     invoice_summary,
     prepare_invoices,
     register,
@@ -62,7 +64,6 @@ DONE_PREFIX = "done:"
 PENDING_SENT = "sent:"  # + the asked-about runs, so an old question cannot settle a newer run
 PENDING_REDO = "redo:"
 INVOICE_PREFIX = "inv:"  # inv:<run id>:m (matched only) | a (matched + checkable) | x (cancel)
-MAX_FAILURE_LINES = 20
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
 POLL_TIMEOUT = 30
 HTTP_TIMEOUT = POLL_TIMEOUT + 10
@@ -151,21 +152,6 @@ def failure_message(exc: Exception, what: str = "발주 처리") -> str:
         text += ("\n\n이 PC의 인터넷 주소(IP)가 바뀌어 네이버가 막았습니다. "
                  "커머스API센터에서 이 PC의 새 IP를 등록해야 합니다. 개발자에게 알려 주세요.")
     return text
-
-
-def dispatch_report(result: DispatchResult) -> str:
-    """What the owner reads after tapping a 송장 등록 button."""
-    lines = []
-    if result.simulated:
-        lines.append("🧪 시험 모드: 네이버에 실제로 등록하지 않았습니다 (INVOICE_DISPATCH_ENABLED 꺼짐).")
-    done = "등록했을 송장" if result.simulated else "등록 완료 송장"
-    lines.append(f"✅ {done} {len(result.success_ids)}건")
-    if result.failures:
-        lines.append(f"⚠️ 실패 {len(result.failures)}건")
-        lines += [f"· {f.id} · {f.message or f.code}" for f in result.failures[:MAX_FAILURE_LINES]]
-        if len(result.failures) > MAX_FAILURE_LINES:
-            lines.append(f"… 그 외 {len(result.failures) - MAX_FAILURE_LINES}건")
-    return "\n".join(lines)
 
 
 def run_keyboard() -> dict:
@@ -355,11 +341,25 @@ class OrderBot:
         self._run(chat)
 
 
-def poll_forever(bot: OrderBot, sleep: Callable[[float], None] = time.sleep) -> None:
+def _run_relay(relay: Callable[[], None]) -> None:
+    try:
+        relay()
+    except Exception:  # the app's requests are optional work: log it and keep the bot alive
+        log.exception("앱 송장 요청 처리 실패")
+
+
+def poll_forever(bot: OrderBot, sleep: Callable[[float], None] = time.sleep,
+                 relay: Callable[[], None] | None = None,
+                 clock: Callable[[], float] = time.monotonic) -> None:
+    """Long-poll Telegram forever; every RELAY_INTERVAL seconds also run relay (the app's 송장 requests)."""
     offset = 0
     delay = 0
     conflict_logged = False
+    last_relay: float | None = None
     while True:
+        if relay is not None and (last_relay is None or clock() - last_relay >= RELAY_INTERVAL):
+            last_relay = clock()
+            _run_relay(relay)
         try:
             updates = bot.tg.call("getUpdates", offset=offset, timeout=POLL_TIMEOUT)
         except (requests.RequestException, RuntimeError) as exc:
@@ -393,6 +393,20 @@ def setup_logging(log_dir: Path | None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", handlers=handlers)
 
 
+def _build_relay(settings: BotSettings) -> Callable[[], None] | None:
+    """Relay for the app's 송장 requests, or None without a data_store section (or when it is unusable)."""
+    try:
+        store = load_store()
+    except Exception as exc:  # a broken secrets file must not keep the bot from starting
+        log.error("앱 요청 연결 안 함: 데이터 저장소 설정을 읽지 못했습니다 (%s)", type(exc).__name__)
+        return None
+    if store is None:
+        log.info("데이터 저장소 설정이 없어 앱의 송장 요청은 받지 않습니다.")
+        return None
+    log.info("앱의 송장 요청을 %d초마다 확인합니다.", RELAY_INTERVAL)
+    return make_relay(store, TelegramNotifier(settings).send)
+
+
 def main() -> int:
     if isinstance(sys.stdout, io.TextIOWrapper):  # None under pythonw
         sys.stdout.reconfigure(encoding="utf-8")
@@ -410,7 +424,7 @@ def main() -> int:
             bot = OrderBot(Telegram(settings.token), settings.allowed_chats)
             me = bot.tg.call("getMe")
             log.info("봇 @%s 시작 (허용된 대화방 %d개). 끄려면 Ctrl+C", me["username"], len(settings.allowed_chats))
-            poll_forever(bot)
+            poll_forever(bot, relay=_build_relay(settings))
         except BaseException as exc:  # under pythonw the log file is the only place a crash shows up
             if not isinstance(exc, KeyboardInterrupt):
                 log.exception("봇이 멈췄습니다 (작업 스케줄러가 1분 뒤 다시 시작)")
