@@ -40,6 +40,9 @@ TEXT_COLUMNS = (COL_ID, COL_ORDER_ID, COL_ZIP, COL_BUNDLE, "상품번호", "구�
 
 HANJIN_TRACKING = "운송장번호"
 HANJIN_REQUIRED = ("받으시는 분", "받는분우편번호", "받는분총주소")
+# A purchase order the supplier sends back with the tracking numbers in a column named after the courier.
+RETURNED_TRACKING, RETURNED_NAME = CARRIER_NAME, "받는사람"
+RETURNED_REQUIRED = (RETURNED_NAME, "전화번호", "주소")
 _BRACKET_TAIL = re.compile(r"\s*\[[^\]]*\]\s*$")
 
 
@@ -81,6 +84,7 @@ class MatchResult:
     assignments: tuple[Assignment, ...]
     invoices_without_order: tuple[Invoice, ...]
     orders_without_invoice: tuple[UnshippedOrder, ...]
+    invoices_without_tracking: tuple[Invoice, ...] = ()  # rows of the file with no tracking number
 
     def matched(self) -> tuple[Assignment, ...]:
         return tuple(a for a in self.assignments if a.status == STATUS_MATCHED)
@@ -172,30 +176,49 @@ def _find_header(rows: list[tuple], key: str) -> int | None:
 
 
 def read_invoice_file(data: bytes) -> list[Invoice]:
-    """The courier's xlsx: one Invoice per row that has a 운송장번호."""
+    """The courier's xlsx, or a purchase order a supplier sent back with a 한진택배 column.
+
+    One Invoice per non-empty row; rows without a tracking number come back with tracking ''
+    so match_invoices can report them (a supplier may have left a box out).
+    """
     rows = list(_open_sheet(data).iter_rows(values_only=True))
-    header_at = _find_header(rows, HANJIN_TRACKING)
-    if header_at is None:
-        raise ValueError("한진 송장파일이 아닙니다. '운송장번호' 열을 찾지 못했습니다.")
+    hanjin_at = _find_header(rows, HANJIN_TRACKING)
+    if hanjin_at is not None:
+        return _read_rows(rows, hanjin_at, HANJIN_REQUIRED, _hanjin_invoice)
+    returned_at = _find_header(rows, RETURNED_TRACKING)
+    if returned_at is not None and RETURNED_NAME in [_text(c) for c in rows[returned_at]]:
+        return _read_rows(rows, returned_at, RETURNED_REQUIRED, _returned_invoice)
+    raise ValueError("송장 파일이 아닙니다. 한진 송장파일('운송장번호' 열) 또는 "
+                     "'한진택배' 열에 송장번호를 적은 발주서를 보내 주세요.")
+
+
+def _read_rows(rows: list[tuple], header_at: int, required: tuple[str, ...], make) -> list[Invoice]:
     header = [_text(c) for c in rows[header_at]]
-    missing = [c for c in HANJIN_REQUIRED if c not in header]
+    missing = [c for c in required if c not in header]
     if missing:
-        raise ValueError(f"한진 송장파일에 필요한 열이 없습니다: {', '.join(missing)}")
+        raise ValueError(f"송장 파일에 필요한 열이 없습니다: {', '.join(missing)}")
     invoices = []
-    for row in rows[header_at + 1:]:
+    for line_no, row in enumerate(rows[header_at + 1:], start=header_at + 2):
         cells = dict(zip(header, row, strict=False))
-        tracking = _text(cells.get(HANJIN_TRACKING))
-        if tracking:
-            invoices.append(_invoice(cells, tracking))
+        if any(_text(v) for v in cells.values()):
+            invoices.append(make(cells, line_no))
     return invoices
 
 
-def _invoice(cells: dict, tracking: str) -> Invoice:
+def _hanjin_invoice(cells: dict, line_no: int) -> Invoice:
     return Invoice(
-        seq=_text(cells.get("순번")), tracking=tracking, name=_text(cells.get("받으시는 분")),
-        phone=_text(cells.get("받으시는 분 전화")), mobile=_text(cells.get("받는분핸드폰")),
-        zip_code=norm_zip(cells.get("받는분우편번호")), address=_text(cells.get("받는분총주소")),
-        item_name=_text(cells.get("품목명")))
+        seq=_text(cells.get("순번")) or str(line_no), tracking=_text(cells.get(HANJIN_TRACKING)),
+        name=_text(cells.get("받으시는 분")), phone=_text(cells.get("받으시는 분 전화")),
+        mobile=_text(cells.get("받는분핸드폰")), zip_code=norm_zip(cells.get("받는분우편번호")),
+        address=_text(cells.get("받는분총주소")), item_name=_text(cells.get("품목명")))
+
+
+def _returned_invoice(cells: dict, line_no: int) -> Invoice:
+    """A purchase-order row (받는사람/전화번호/주소/구분); it has no zip code."""
+    return Invoice(
+        seq=str(line_no), tracking=_text(cells.get(RETURNED_TRACKING)), name=_text(cells.get(RETURNED_NAME)),
+        phone=_text(cells.get("전화번호")), zip_code="", address=_text(cells.get("주소")),
+        item_name=_text(cells.get("구분")))
 
 
 def read_order_export(data: bytes) -> pd.DataFrame:
@@ -267,6 +290,16 @@ def _mismatch(group: _Group, invoice: Invoice) -> tuple[bool, bool]:
     return bool(phones & group.phones), norm_invoice_address(invoice.address) == group.address
 
 
+def _is_candidate(group: _Group, invoice: Invoice) -> bool:
+    """Same name and zip; a file without zip codes needs the phone or the address to agree as well."""
+    if norm_name(invoice.name) != group.name:
+        return False
+    zip_code = norm_zip(invoice.zip_code)
+    if zip_code:
+        return zip_code == group.zip_code
+    return any(_mismatch(group, invoice))
+
+
 def _problem_reason(phone_ok: bool, addr_ok: bool) -> str:
     return "전화번호·주소 다름" if not phone_ok and not addr_ok else (
         "전화번호 다름" if not phone_ok else "주소 다름")
@@ -296,11 +329,10 @@ def _decide(group: _Group, picked: list[int], shared_by: list[int], invoices: li
 
 def match_invoices(orders: pd.DataFrame, invoices: list[Invoice]) -> MatchResult:
     """Pair each shipment group of the order table with the tracking number(s) of the same recipient."""
+    no_tracking = tuple(i for i in invoices if not i.tracking)
+    invoices = [i for i in invoices if i.tracking]
     groups = _group_orders(orders)
-    by_key: dict[tuple[str, str], list[int]] = defaultdict(list)
-    for index, invoice in enumerate(invoices):
-        by_key[(norm_name(invoice.name), norm_zip(invoice.zip_code))].append(index)
-    candidates = [by_key.get((g.name, g.zip_code), []) for g in groups]
+    candidates = [[i for i, inv in enumerate(invoices) if _is_candidate(g, inv)] for g in groups]
     sharers: dict[int, list[int]] = defaultdict(list)
     for g, picked in enumerate(candidates):
         for i in picked:
@@ -313,7 +345,7 @@ def match_invoices(orders: pd.DataFrame, invoices: list[Invoice]) -> MatchResult
         shared = sharers[candidates[g][0]]
         assignments.append(_decide(group, candidates[g], shared, invoices, groups, candidates))
     leftovers = tuple(inv for i, inv in enumerate(invoices) if i not in sharers)
-    return MatchResult(tuple(assignments), leftovers, tuple(unshipped))
+    return MatchResult(tuple(assignments), leftovers, tuple(unshipped), no_tracking)
 
 
 # ---------------------------------------------------------------- upload workbook
