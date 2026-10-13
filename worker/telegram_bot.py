@@ -363,13 +363,16 @@ def poll_forever(bot: OrderBot, sleep: Callable[[float], None] = time.sleep,
         try:
             updates = bot.tg.call("getUpdates", offset=offset, timeout=POLL_TIMEOUT)
         except (requests.RequestException, RuntimeError) as exc:
+            delay = BACKOFF_START if delay == 0 else min(delay * 2, BACKOFF_MAX)
             if CONFLICT_MARK in str(exc):
                 if not conflict_logged:
                     log.warning("다른 곳에서 같은 봇이 실행 중입니다. 다른 PC나 창을 끄세요. (%s)", exc)
                     conflict_logged = True
+            elif isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+                # everyday network blips: one line, and only the type (the message can hold the token URL)
+                log.warning("텔레그램 연결 지연, %d초 뒤 다시 시도 (%s)", delay, type(exc).__name__)
             else:
                 log.exception("텔레그램 연결 실패, 다시 시도")
-            delay = BACKOFF_START if delay == 0 else min(delay * 2, BACKOFF_MAX)
             sleep(delay)
             continue
         delay, conflict_logged = 0, False

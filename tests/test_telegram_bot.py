@@ -261,6 +261,19 @@ def test_poll_conflict_is_warned_once(caplog):
     assert all(r.exc_info is None for r in caplog.records)
 
 
+def test_poll_network_hiccup_is_one_line_without_url(caplog):
+    import requests
+
+    hiccup = requests.ConnectionError("HTTPSConnectionPool(host='api.telegram.org'): url: /botSECRET/getUpdates")
+    with caplog.at_level("WARNING", logger="telegram_bot"):
+        _poll([requests.ReadTimeout("read timed out"), hiccup, _Stop()])
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 2 and all("연결 지연" in m for m in messages)
+    assert "5초 뒤" in messages[0] and "10초 뒤" in messages[1]
+    assert all(r.exc_info is None for r in caplog.records)
+    assert "SECRET" not in caplog.text
+
+
 def test_failure_message_explains_ip_not_allowed():
     from worker.naver_client import NaverApiError
     from worker.telegram_bot import failure_message
