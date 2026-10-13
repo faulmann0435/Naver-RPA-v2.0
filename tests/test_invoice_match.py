@@ -203,3 +203,59 @@ def test_returned_address_with_tabs_and_newlines_still_matches():
 def test_file_with_neither_format_is_refused():
     with pytest.raises(ValueError, match="송장 파일이 아닙니다"):
         read_invoice_file(hanjin_xlsx(hanjin_row(1, "1"), columns=["받는사람", "전화번호", "주소"]))
+
+
+def test_supplier_list_matches_on_name_and_phone_with_its_own_courier():
+    from tests.invoice_helpers import list_row, list_xlsx
+    table = normalize_orders(orders(order_row("1"), order_row("2", "김철수", 수취인연락처1="010-0000-0002")))
+    invoices = read_invoice_file(list_xlsx(list_row("6006-6339-2321"),
+                                           list_row("6890179430672", "우체국택배", "김철수", 연락처="010-0000-0002")))
+    result = match_invoices(table, invoices)
+    assert {(a.tracking, a.carrier) for a in result.matched()} == {("600663392321", "CJ대한통운"),
+                                                                     ("6890179430672", "우체국택배")}
+    rows = list(openpyxl.load_workbook(BytesIO(build_upload_workbook(table, result.matched()))).active.values)
+    header = rows[0]
+    assert {r[header.index("택배사")] for r in rows[1:]} == {"CJ대한통운", "우체국택배"}
+
+
+def test_supplier_list_namesake_with_other_phone_is_not_matched():
+    from tests.invoice_helpers import list_row, list_xlsx
+    result = match_invoices(normalize_orders(orders(order_row("1"))),
+                            read_invoice_file(list_xlsx(list_row("1", 연락처="010-9999-9999"))))
+    assert result.assignments == () and len(result.invoices_without_order) == 1
+
+
+def test_supplier_list_unknown_courier_is_refused():
+    from tests.invoice_helpers import list_row, list_xlsx
+    with pytest.raises(ValueError, match="모르는 택배사"):
+        read_invoice_file(list_xlsx(list_row("1", "어딘가택배")))
+
+
+@pytest.mark.parametrize("written, expected", [("씨제이대한통운", ("CJ대한통운", "CJGLS")),
+                                               ("CJ 대한통운", ("CJ대한통운", "CJGLS")),
+                                               ("로젠택배", ("로젠택배", "KGB")),
+                                               ("우체국", ("우체국택배", "EPOST")),
+                                               ("한진택배", ("한진택배", "HANJIN"))])
+def test_courier_names_map_to_naver_names_and_codes(written, expected):
+    from core.invoice_match import carrier_of
+    assert carrier_of(written) == expected
+
+
+def test_two_boxes_for_one_person_are_paired_by_product_name():
+    from tests.invoice_helpers import list_row, list_xlsx
+    table = normalize_orders(orders(order_row("1", 상품명="생물 갑오징어 1kg"),
+                                    order_row("2", 상품명="통통 생물오징어 동해안")))
+    invoices = read_invoice_file(list_xlsx(list_row("111", 품목및수량="생물 갑오징어 1kg x 1"),
+                                           list_row("222", 품목및수량="통통 생물 오징어 1kg x 1")))
+    result = match_invoices(table, invoices)
+    assert {a.product_order_ids: a.tracking for a in result.assignments} == {("1",): "111", ("2",): "222"}
+    assert all(a.includable and "상품명으로 고름" in a.reason for a in result.assignments)
+
+
+def test_two_identical_boxes_for_one_order_stay_unresolved():
+    from tests.invoice_helpers import list_row, list_xlsx
+    result = match_invoices(normalize_orders(orders(order_row("1", 상품명="박달홍게 4kg"))),
+                            read_invoice_file(list_xlsx(list_row("111", 품목및수량="일품 박달홍게 4kg x 1"),
+                                                        list_row("222", 품목및수량="일품 박달홍게 4kg x 1"))))
+    (a,) = result.assignments
+    assert not a.includable and a.reason == "송장 여러 개"

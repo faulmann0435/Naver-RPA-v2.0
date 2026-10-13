@@ -1,6 +1,8 @@
 """송장 매칭: match the courier's tracking-number file (한진 송장파일) to the Naver order rows.
 
-Pure functions, no I/O beyond parsing xlsx bytes. Streamlit and the Telegram bot share this core.
+Pure functions, no I/O beyond parsing xlsx/xls bytes. Streamlit and the Telegram bot share this core.
+Three tracking-file layouts are read: the 한진 file, a purchase order a supplier sent back with a
+한진택배 column, and a supplier's shipping list (택배사 / 운송장번호 / 이름 / 연락처) that mixes couriers.
 
     read_invoice_file(bytes)   -> list[Invoice]        one per box
     read_order_export(bytes)   -> DataFrame            the Naver order export (decrypt before)
@@ -27,19 +29,39 @@ ORDER_SHEET = "발주발송관리"
 STATUS_MATCHED, STATUS_CHECK = "MATCHED", "NEEDS_CHECK"
 NOTE_NO_ORDER = "주문을 못 찾음"
 READY_STATUS = "발송대기"
-HEADER_SCAN_ROWS = 5
+HEADER_SCAN_ROWS = 10  # the supplier list has a totals block above its header
 
 COL_ID, COL_ORDER_ID = "상품주문번호", "주문번호"
 COL_METHOD, COL_CARRIER, COL_TRACKING = "배송방법", "택배사", "송장번호"
 COL_NAME, COL_ZIP, COL_ADDRESS = "수취인명", "우편번호", "통합배송지"
 COL_PHONE1, COL_PHONE2 = "수취인연락처1", "수취인연락처2"
 COL_BUNDLE, COL_STATUS, COL_ITEM = "배송비 묶음번호", "주문상태", "상품명"
+COL_OPTION = "옵션정보"
+REASON_BY_ITEM = "같은 분 상자 여러 개 · 상품명으로 고름"
 REQUIRED_ORDER_COLUMNS = (COL_ID, COL_NAME, COL_ZIP, COL_ADDRESS, COL_PHONE1)
 TEXT_COLUMNS = (COL_ID, COL_ORDER_ID, COL_ZIP, COL_BUNDLE, "상품번호", "구매자연락처",
                 COL_PHONE1, COL_PHONE2, COL_TRACKING)
 
 HANJIN_TRACKING = "운송장번호"
 HANJIN_REQUIRED = ("받으시는 분", "받는분우편번호", "받는분총주소")
+# Courier names as suppliers write them -> (name Naver's 엑셀 일괄발송 expects, Commerce API code).
+# Codes from Naver's delivery-company list (LOGEN was merged into KGB).
+_HANJIN = (CARRIER_NAME, "HANJIN")
+_CJ = ("CJ대한통운", "CJGLS")
+_EPOST = ("우체국택배", "EPOST")
+_LOGEN = ("로젠택배", "KGB")
+_LOTTE = ("롯데택배", "HYUNDAI")
+CARRIERS: dict[str, tuple[str, str]] = {
+    "한진택배": _HANJIN, "한진": _HANJIN,
+    "CJ대한통운": _CJ, "씨제이대한통운": _CJ, "대한통운": _CJ, "CJ택배": _CJ, "CJ": _CJ,
+    "우체국택배": _EPOST, "우체국": _EPOST,
+    "로젠택배": _LOGEN, "로젠": _LOGEN,
+    "롯데택배": _LOTTE, "롯데": _LOTTE,
+}
+COURIER_CODES = {name: code for name, code in CARRIERS.values()}
+# A supplier's shipping list: one row per box, several couriers mixed, no address.
+LIST_TRACKING, LIST_CARRIER, LIST_NAME = HANJIN_TRACKING, "택배사", "이름"
+LIST_REQUIRED = (LIST_CARRIER, LIST_NAME, "연락처")
 # A purchase order the supplier sends back with the tracking numbers in a column named after the courier.
 RETURNED_TRACKING, RETURNED_NAME = CARRIER_NAME, "받는사람"
 RETURNED_REQUIRED = (RETURNED_NAME, "전화번호", "주소")
@@ -57,6 +79,7 @@ class Invoice:
     address: str
     item_name: str
     mobile: str = ""
+    carrier: str = CARRIER_NAME  # Naver's name for the courier
 
 
 @dataclass(frozen=True)
@@ -69,6 +92,7 @@ class Assignment:
     status: str
     includable: bool
     reason: str = ""
+    carrier: str = CARRIER_NAME
 
 
 @dataclass(frozen=True)
@@ -107,6 +131,20 @@ def norm_name(value) -> str:
 
 def norm_phone(value) -> str:
     return re.sub(r"\D", "", _text(value))
+
+
+def norm_tracking(value) -> str:
+    """Suppliers write 6006-6339-2321; Naver wants the bare number."""
+    return re.sub(r"[^0-9A-Za-z]", "", _text(value))
+
+
+def carrier_of(value) -> tuple[str, str]:
+    """Supplier's courier name -> (Naver name, API code); ValueError for one we do not know."""
+    key = re.sub(r"\s+", "", _text(value)).upper()
+    for alias, carrier in CARRIERS.items():
+        if alias.upper() == key:
+            return carrier
+    raise ValueError(f"모르는 택배사입니다: '{_text(value)}'. 개발자에게 알려 주세요.")
 
 
 def norm_zip(value) -> str:
@@ -168,6 +206,22 @@ def _open_sheet(data: bytes, preferred: str | None = None):
     return sheet
 
 
+def _sheet_rows(data: bytes) -> list[tuple]:
+    """Rows of the first sheet of an .xlsx or an old .xls (suppliers' files are often slightly damaged)."""
+    if data.startswith(b"\xd0\xcf\x11\xe0"):
+        try:
+            import xlrd  # only .xls needs it; a PC without it still runs everything else
+        except ImportError as exc:
+            raise ValueError(".xls 파일을 읽는 부품(xlrd)이 없습니다. 설치.bat을 한 번 다시 실행해 주세요.") from exc
+        try:
+            book = xlrd.open_workbook(file_contents=data, ignore_workbook_corruption=True)
+        except Exception as exc:  # any unreadable-file error becomes one readable message
+            raise ValueError(f"엑셀(.xls) 파일을 읽지 못했습니다: {exc}") from exc
+        sheet = book.sheet_by_index(0)
+        return [tuple(sheet.row_values(r)) for r in range(sheet.nrows)]
+    return list(_open_sheet(data).iter_rows(values_only=True))
+
+
 def _find_header(rows: list[tuple], key: str) -> int | None:
     for position, row in enumerate(rows[:HEADER_SCAN_ROWS]):
         if any(_text(cell) == key for cell in row):
@@ -181,10 +235,13 @@ def read_invoice_file(data: bytes) -> list[Invoice]:
     One Invoice per non-empty row; rows without a tracking number come back with tracking ''
     so match_invoices can report them (a supplier may have left a box out).
     """
-    rows = list(_open_sheet(data).iter_rows(values_only=True))
-    hanjin_at = _find_header(rows, HANJIN_TRACKING)
-    if hanjin_at is not None:
-        return _read_rows(rows, hanjin_at, HANJIN_REQUIRED, _hanjin_invoice)
+    rows = _sheet_rows(data)
+    tracking_at = _find_header(rows, HANJIN_TRACKING)
+    if tracking_at is not None:
+        header = [_text(c) for c in rows[tracking_at]]
+        if LIST_NAME in header and LIST_CARRIER in header:
+            return _read_rows(rows, tracking_at, LIST_REQUIRED, _list_invoice)
+        return _read_rows(rows, tracking_at, HANJIN_REQUIRED, _hanjin_invoice)
     returned_at = _find_header(rows, RETURNED_TRACKING)
     if returned_at is not None and RETURNED_NAME in [_text(c) for c in rows[returned_at]]:
         return _read_rows(rows, returned_at, RETURNED_REQUIRED, _returned_invoice)
@@ -207,7 +264,7 @@ def _read_rows(rows: list[tuple], header_at: int, required: tuple[str, ...], mak
 
 def _hanjin_invoice(cells: dict, line_no: int) -> Invoice:
     return Invoice(
-        seq=_text(cells.get("순번")) or str(line_no), tracking=_text(cells.get(HANJIN_TRACKING)),
+        seq=_text(cells.get("순번")) or str(line_no), tracking=norm_tracking(cells.get(HANJIN_TRACKING)),
         name=_text(cells.get("받으시는 분")), phone=_text(cells.get("받으시는 분 전화")),
         mobile=_text(cells.get("받는분핸드폰")), zip_code=norm_zip(cells.get("받는분우편번호")),
         address=_text(cells.get("받는분총주소")), item_name=_text(cells.get("품목명")))
@@ -216,9 +273,18 @@ def _hanjin_invoice(cells: dict, line_no: int) -> Invoice:
 def _returned_invoice(cells: dict, line_no: int) -> Invoice:
     """A purchase-order row (받는사람/전화번호/주소/구분); it has no zip code."""
     return Invoice(
-        seq=str(line_no), tracking=_text(cells.get(RETURNED_TRACKING)), name=_text(cells.get(RETURNED_NAME)),
+        seq=str(line_no), tracking=norm_tracking(cells.get(RETURNED_TRACKING)), name=_text(cells.get(RETURNED_NAME)),
         phone=_text(cells.get("전화번호")), zip_code="", address=_text(cells.get("주소")),
         item_name=_text(cells.get("구분")))
+
+
+def _list_invoice(cells: dict, line_no: int) -> Invoice:
+    """A supplier's shipping-list row (발송일자/택배사/운송장번호/이름/연락처/품목및수량): no zip, no address."""
+    tracking = norm_tracking(cells.get(LIST_TRACKING))
+    carrier = carrier_of(cells.get(LIST_CARRIER))[0] if tracking else CARRIER_NAME
+    return Invoice(
+        seq=str(line_no), tracking=tracking, name=_text(cells.get(LIST_NAME)), phone=_text(cells.get("연락처")),
+        zip_code="", address="", item_name=_text(cells.get("품목및수량")), carrier=carrier)
 
 
 def read_order_export(data: bytes) -> pd.DataFrame:
@@ -245,6 +311,7 @@ class _Group:
     address: str
     phones: frozenset[str]
     items: str
+    item_text: str = ""  # every product name and option of the group, for telling boxes apart
 
 
 def _items_summary(names: list[str]) -> str:
@@ -281,13 +348,15 @@ def _group(rows: list[dict]) -> _Group:
         ids=tuple(_text(r[COL_ID]) for r in rows), recipient=_text(first[COL_NAME]),
         name=norm_name(first[COL_NAME]), zip_code=norm_zip(first[COL_ZIP]),
         address=norm_order_address(first[COL_ADDRESS]), phones=frozenset(p for p in phones if p),
-        items=_items_summary([_text(r.get(COL_ITEM)) for r in rows]))
+        items=_items_summary([_text(r.get(COL_ITEM)) for r in rows]),
+        item_text=" ".join(_text(r.get(c)) for r in rows for c in (COL_ITEM, COL_OPTION)))
 
 
 def _mismatch(group: _Group, invoice: Invoice) -> tuple[bool, bool]:
     """(phone_ok, address_ok)"""
     phones = {norm_phone(invoice.phone), norm_phone(invoice.mobile)} - {""}
-    return bool(phones & group.phones), norm_invoice_address(invoice.address) == group.address
+    address_ok = not invoice.address or norm_invoice_address(invoice.address) == group.address
+    return bool(phones & group.phones), address_ok
 
 
 def _is_candidate(group: _Group, invoice: Invoice) -> bool:
@@ -297,7 +366,62 @@ def _is_candidate(group: _Group, invoice: Invoice) -> bool:
     zip_code = norm_zip(invoice.zip_code)
     if zip_code:
         return zip_code == group.zip_code
-    return any(_mismatch(group, invoice))
+    phone_ok, address_ok = _mismatch(group, invoice)
+    return phone_ok or (bool(invoice.address) and address_ok)
+
+
+def _bigrams(text: str) -> set[str]:
+    squashed = re.sub(r"[\s\W_]+", "", text.lower())
+    return {squashed[i:i + 2] for i in range(len(squashed) - 1)}
+
+
+def _item_score(group: _Group, invoice: Invoice) -> float:
+    """Share of the box's item text (the shorter one) found in the order's product names and options."""
+    box = _bigrams(invoice.item_name)
+    return len(box & _bigrams(group.item_text)) / len(box) if box else 0.0
+
+
+def _best(scores: dict[int, float]) -> int | None:
+    """The key with the strictly highest positive score, if there is one."""
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    if not ranked or ranked[0][1] <= 0 or (len(ranked) > 1 and ranked[1][1] == ranked[0][1]):
+        return None
+    return ranked[0][0]
+
+
+def _pick_by_item(groups: list[_Group], candidates: list[list[int]], invoices: list[Invoice]) -> set[int]:
+    """Same person, several boxes: pair each of the person's orders with one box by product name.
+
+    Repeatedly takes a pairing that is best both ways (the box fits this order best and the order
+    fits this box best), then drops that box from the person's other orders; an order left with one
+    box gets it. Narrows `candidates` in place; returns the groups narrowed this way.
+    """
+    open_groups = {g for g, picked in enumerate(candidates) if len(picked) > 1}
+    narrowed: set[int] = set()
+    while open_groups:
+        taken = {candidates[g][0] for g in narrowed}
+        choices = {g: [i for i in candidates[g] if i not in taken] for g in open_groups}
+        pair = next(((g, c[0]) for g, c in choices.items() if len(c) == 1), None) or _mutual_pair(
+            groups, invoices, choices)
+        if pair is None:
+            break
+        g, box = pair
+        candidates[g] = [box]
+        narrowed.add(g)
+        open_groups.discard(g)
+    return narrowed
+
+
+def _mutual_pair(groups: list[_Group], invoices: list[Invoice],
+                 choices: dict[int, list[int]]) -> tuple[int, int] | None:
+    for g, boxes in choices.items():
+        box = _best({i: _item_score(groups[g], invoices[i]) for i in boxes})
+        if box is None:
+            continue
+        rivals = [h for h, other in choices.items() if box in other]
+        if _best({h: _item_score(groups[h], invoices[box]) for h in rivals}) == g:
+            return g, box
+    return None
 
 
 def _problem_reason(phone_ok: bool, addr_ok: bool) -> str:
@@ -305,26 +429,30 @@ def _problem_reason(phone_ok: bool, addr_ok: bool) -> str:
         "전화번호 다름" if not phone_ok else "주소 다름")
 
 
-def _assignment(group: _Group, tracking: str, status: str, includable: bool, reason: str = "") -> Assignment:
-    return Assignment(group.ids, tracking, group.recipient, group.items, status, includable, reason)
+def _assignment(group: _Group, invoice: Invoice, status: str, includable: bool, reason: str = "",
+                tracking: str | None = None) -> Assignment:
+    return Assignment(group.ids, tracking or invoice.tracking, group.recipient, group.items, status, includable,
+                      reason, invoice.carrier)
 
 
 def _decide(group: _Group, picked: list[int], shared_by: list[int], invoices: list[Invoice],
-            groups: list[_Group], candidates: list[list[int]]) -> Assignment:
+            groups: list[_Group], candidates: list[list[int]], by_item: bool = False) -> Assignment:
     if len(picked) > 1:
         tracking = ", ".join(invoices[i].tracking for i in picked)
-        return _assignment(group, tracking, STATUS_CHECK, False, "송장 여러 개")
+        return _assignment(group, invoices[picked[0]], STATUS_CHECK, False, "송장 여러 개", tracking)
     invoice = invoices[picked[0]]
     phone_ok, addr_ok = _mismatch(group, invoice)
     if len(shared_by) == 1:
+        if phone_ok and addr_ok and by_item:
+            return _assignment(group, invoice, STATUS_CHECK, True, REASON_BY_ITEM)
         if phone_ok and addr_ok:
-            return _assignment(group, invoice.tracking, STATUS_MATCHED, True)
-        return _assignment(group, invoice.tracking, STATUS_CHECK, True, _problem_reason(phone_ok, addr_ok))
+            return _assignment(group, invoice, STATUS_MATCHED, True)
+        return _assignment(group, invoice, STATUS_CHECK, True, _problem_reason(phone_ok, addr_ok))
     all_clean = all(len(candidates[g]) == 1 and all(_mismatch(groups[g], invoice))
                     for g in shared_by)
     if all_clean:
-        return _assignment(group, invoice.tracking, STATUS_CHECK, True, "따로 주문했지만 한 상자로 보낸 것 같음")
-    return _assignment(group, invoice.tracking, STATUS_CHECK, False, "여러 주문에 걸친 송장")
+        return _assignment(group, invoice, STATUS_CHECK, True, "따로 주문했지만 한 상자로 보낸 것 같음")
+    return _assignment(group, invoice, STATUS_CHECK, False, "여러 주문에 걸친 송장")
 
 
 def match_invoices(orders: pd.DataFrame, invoices: list[Invoice]) -> MatchResult:
@@ -333,6 +461,7 @@ def match_invoices(orders: pd.DataFrame, invoices: list[Invoice]) -> MatchResult
     invoices = [i for i in invoices if i.tracking]
     groups = _group_orders(orders)
     candidates = [[i for i, inv in enumerate(invoices) if _is_candidate(g, inv)] for g in groups]
+    by_item = _pick_by_item(groups, candidates, invoices)
     sharers: dict[int, list[int]] = defaultdict(list)
     for g, picked in enumerate(candidates):
         for i in picked:
@@ -343,7 +472,7 @@ def match_invoices(orders: pd.DataFrame, invoices: list[Invoice]) -> MatchResult
             unshipped.append(UnshippedOrder(group.ids, group.recipient, group.items))
             continue
         shared = sharers[candidates[g][0]]
-        assignments.append(_decide(group, candidates[g], shared, invoices, groups, candidates))
+        assignments.append(_decide(group, candidates[g], shared, invoices, groups, candidates, g in by_item))
     leftovers = tuple(inv for i, inv in enumerate(invoices) if i not in sharers)
     return MatchResult(tuple(assignments), leftovers, tuple(unshipped), no_tracking)
 
@@ -376,6 +505,7 @@ def build_upload_workbook(orders: pd.DataFrame, assignments, carrier: str = CARR
                           method: str = DELIVERY_METHOD_LABEL) -> bytes:
     """xlsx for Naver's 엑셀 일괄발송: sheet 발송처리, header in row 1, only the assigned rows."""
     tracking_of = {pid: a.tracking for a in assignments for pid in a.product_order_ids}
+    carrier_of_id = {pid: a.carrier for a in assignments for pid in a.product_order_ids}
     table = normalize_orders(orders)
     columns = _upload_columns(list(table.columns))
     workbook = openpyxl.Workbook()
@@ -386,7 +516,8 @@ def build_upload_workbook(orders: pd.DataFrame, assignments, carrier: str = CARR
         tracking = tracking_of.get(_text(row.get(COL_ID)))
         if tracking is None:
             continue
-        row = {**row, COL_METHOD: method, COL_CARRIER: carrier, COL_TRACKING: tracking}
+        courier = carrier_of_id.get(_text(row.get(COL_ID))) or carrier
+        row = {**row, COL_METHOD: method, COL_CARRIER: courier, COL_TRACKING: tracking}
         sheet.append([_excel_cell(row.get(c, ""), c) for c in columns])
     for position, name in enumerate(columns, start=1):
         if name in TEXT_COLUMNS:
