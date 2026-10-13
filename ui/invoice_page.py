@@ -14,6 +14,7 @@ def _tables(result) -> None:
         ("일치", logic.matched_table(result), True),
         ("확인 필요", logic.check_table(result), True),
         ("주문을 못 찾은 송장", logic.loose_invoice_table(result), False),
+        ("송장번호가 없는 줄", logic.no_tracking_table(result), True),
         ("송장 없는 발송대기 주문", logic.unshipped_table(result), False),
     )
     for title, table, expanded in sections:
@@ -39,21 +40,25 @@ def _download(outcome: logic.InvoiceOutcome) -> None:
 
 def render() -> None:
     st.subheader("🚚 송장 입력")
-    st.write("주문서 엑셀과 한진 송장파일을 올리면 받는 사람이 같은 주문끼리 송장번호를 맞춰 줍니다.")
+    st.write("주문서 엑셀과 송장 파일을 올리면 받는 사람이 같은 주문끼리 송장번호를 맞춰 줍니다.")
     if not HAS_MSOFFCRYPTO:
         st.warning("비밀번호 보호 엑셀: `pip install msoffcrypto-tool`")
     order_file = st.file_uploader("주문서 엑셀 (스마트스토어 발주발송관리)", type=["xlsx"], key="invoice_orders")
-    invoice_file = st.file_uploader("한진 송장파일", type=["xlsx"], key="invoice_hanjin")
+    invoice_files = st.file_uploader("송장 파일 (한진 송장파일, 또는 '한진택배' 칸에 송장번호를 적은 발주서 · 여러 개 가능)",
+                                     type=["xlsx"], accept_multiple_files=True, key="invoice_hanjin")
     password = st.text_input("주문서 엑셀 비밀번호 (없으면 비움)", type="password", key="invoice_pw")
-    if order_file is None or invoice_file is None:
-        st.info("두 파일을 모두 올려 주세요.")
+    if order_file is None or not invoice_files:
+        st.info("주문서와 송장 파일을 모두 올려 주세요.")
         return
     try:
-        outcome = logic.match_files(order_file.getvalue(), invoice_file.getvalue(), password)
+        outcome = logic.match_files(order_file.getvalue(), [f.getvalue() for f in invoice_files], password)
     except ValueError as e:
         st.error(str(e))
         return
     for column, (label, value) in zip(st.columns(4), logic.metrics(outcome.result).items(), strict=True):
         column.metric(label, value)
+    blank = len(outcome.result.invoices_without_tracking)
+    if blank:
+        st.warning(f"송장번호가 없는 줄이 {blank}개 있습니다. 보낸 곳에 송장을 빠뜨리지 않았는지 확인하세요.")
     _tables(outcome.result)
     _download(outcome)

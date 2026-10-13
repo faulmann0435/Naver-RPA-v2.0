@@ -105,3 +105,12 @@ def test_register_skips_orders_already_in_the_ledger(tmp_path):
 def test_bad_file_raises_a_readable_error(tmp_path, bad):
     with pytest.raises(ValueError, match="xlsx"):
         prepare_invoices(bad, fetch=list, ledger=tmp_path / "l.json")
+
+
+def test_supplier_purchase_order_with_tracking_column_is_matched_and_blank_rows_named(tmp_path):
+    from tests.invoice_helpers import returned_row, returned_xlsx
+    data = returned_xlsx(returned_row("111"), returned_row(None, None, 전화번호=None, 주소=None, 구분="초벌장어 9kg"))
+    run = prepare_invoices(data, fetch=lambda: [api_item("1")], ledger=tmp_path / "ledger.json", when=WHEN)
+    assert [a.tracking for a in run.result.matched()] == ["111"]
+    text = invoice_summary(run)
+    assert "송장번호가 없는 줄 1개" in text and "3번 줄 · 받는 사람 없음 · 초벌장어 9kg" in text

@@ -32,11 +32,14 @@ class InvoiceOutcome:
     result: MatchResult
 
 
-def match_files(order_bytes: bytes, invoice_bytes: bytes, password: str | None = None) -> InvoiceOutcome:
-    """Decrypt and read both files, then match. Raises ValueError with a Korean message."""
+def match_files(order_bytes: bytes, invoice_bytes: bytes | list[bytes],
+                password: str | None = None) -> InvoiceOutcome:
+    """Decrypt and read the order export and every tracking file, then match. Raises ValueError (Korean)."""
     plain = _get_excel_bytes(BytesIO(order_bytes), password=password)
     orders = read_order_export(plain)
-    return InvoiceOutcome(orders, match_invoices(orders, read_invoice_file(invoice_bytes)))
+    files = [invoice_bytes] if isinstance(invoice_bytes, bytes) else invoice_bytes
+    invoices = [invoice for data in files for invoice in read_invoice_file(data)]
+    return InvoiceOutcome(orders, match_invoices(orders, invoices))
 
 
 def metrics(result: MatchResult) -> dict[str, int]:
@@ -67,6 +70,12 @@ def loose_invoice_table(result: MatchResult) -> pd.DataFrame:
     rows = [{"순번": i.seq, "받는분": i.name, "송장번호": i.tracking, "품목": i.item_name}
             for i in result.invoices_without_order]
     return pd.DataFrame(rows, columns=["순번", "받는분", "송장번호", "품목"])
+
+
+def no_tracking_table(result: MatchResult) -> pd.DataFrame:
+    rows = [{"줄": i.seq, "받는분": i.name or "(비어 있음)", "품목": i.item_name}
+            for i in result.invoices_without_tracking]
+    return pd.DataFrame(rows, columns=["줄", "받는분", "품목"])
 
 
 def unshipped_table(result: MatchResult) -> pd.DataFrame:

@@ -48,6 +48,20 @@ def hanjin_xlsx(*rows: dict, columns: list[str] | None = None) -> bytes:
     return _workbook_bytes("sheet1", [columns] + [[r.get(c) for c in columns] for r in rows])
 
 
+RETURNED_COLUMNS = ["받는사람", "전화번호", "주소", "구분", "수량", "배송메시지", "보내는사람", "한진택배"]
+
+
+def returned_row(tracking: str | None, name: str | None = "홍길동", **over) -> dict:
+    """A purchase-order row a supplier sent back with the tracking number filled in."""
+    row = {"받는사람": name, "전화번호": "010-0000-0001", "주소": ADDRESS, "구분": "초벌장어 1kg",
+           "수량": "1", "배송메시지": "", "보내는사람": "최고다농수산", "한진택배": tracking}
+    return {**row, **over}
+
+
+def returned_xlsx(*rows: dict) -> bytes:
+    return _workbook_bytes("발주", [RETURNED_COLUMNS] + [[r.get(c) for c in RETURNED_COLUMNS] for r in rows])
+
+
 def order_export_xlsx(*rows: dict) -> bytes:
     """Like Naver's export: an instruction line first, then the header."""
     lines = [["안내: 이 줄은 설명입니다."] + [None] * (len(ORDER_COLUMNS) - 1), ORDER_COLUMNS]

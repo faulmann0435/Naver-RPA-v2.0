@@ -155,12 +155,17 @@ def invoice_summary(run: InvoiceRun) -> str:
         f"· 주문 못 찾은 송장 {len(loose)}건",
         f"· 송장 없는 발송대기 주문 {len(result.orders_without_invoice)}건",
     ]
+    if result.invoices_without_tracking:
+        lines.append(f"· ⚠️ 송장번호가 없는 줄 {len(result.invoices_without_tracking)}개 (보낸 곳에 확인)")
     if run.already_registered:
         lines.append(f"· 이미 등록한 주문 {run.already_registered}건 제외")
     detail: list[str] = []
     if checks:
         detail += ["", "⚠️ 확인 필요"] + [
             f"· {a.recipient} · {a.reason} · {a.tracking}" + ("" if a.includable else " (제외)") for a in checks]
+    if result.invoices_without_tracking:
+        detail += ["", "⚠️ 송장번호가 없는 줄"] + [
+            f"· {i.seq}번 줄 · {i.name or '받는 사람 없음'} · {i.item_name}" for i in result.invoices_without_tracking]
     if loose:
         detail += ["", f"❓ {NOTE_NO_ORDER}"] + [f"· {i.seq} · {i.name} · {i.tracking}" for i in loose]
     if result.orders_without_invoice:

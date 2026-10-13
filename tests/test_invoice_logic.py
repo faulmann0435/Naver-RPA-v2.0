@@ -66,4 +66,14 @@ def test_bad_files_give_readable_errors():
 
 def test_page_renders_without_files():
     app = AppTest.from_string("from ui import invoice_page\ninvoice_page.render()").run()
-    assert not app.exception and "두 파일" in app.info[0].value
+    assert not app.exception and "모두 올려 주세요" in app.info[0].value
+
+
+def test_several_tracking_files_at_once_and_blank_rows_table():
+    from tests.invoice_helpers import returned_row, returned_xlsx
+    orders = order_export_xlsx(order_row("1"), order_row("2", "김철수", 수취인연락처1="010-0000-0002"))
+    hanjin = hanjin_xlsx(hanjin_row(1, "111"))
+    supplier = returned_xlsx(returned_row("222", "김철수", 전화번호="010-0000-0002"), returned_row(None, None))
+    outcome = logic.match_files(orders, [hanjin, supplier])
+    assert sorted(a.tracking for a in outcome.result.matched()) == ["111", "222"]
+    assert list(logic.no_tracking_table(outcome.result)["받는분"]) == ["(비어 있음)"]

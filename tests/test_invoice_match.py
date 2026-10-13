@@ -15,11 +15,14 @@ from core.invoice_match import (
     read_order_export,
 )
 from tests.invoice_helpers import (
+    ADDRESS,
     hanjin_row,
     hanjin_xlsx,
     order_export_xlsx,
     order_row,
     orders,
+    returned_row,
+    returned_xlsx,
 )
 
 
@@ -103,9 +106,12 @@ def test_shipped_or_not_ready_orders_are_ignored():
     assert [a.product_order_ids for a in result.assignments] == [("3",)]
 
 
-def test_hanjin_header_row_is_found_and_empty_tracking_skipped():
+def test_hanjin_header_row_is_found_and_empty_tracking_reported():
     data = hanjin_xlsx(hanjin_row(1, "111"), hanjin_row(2, None))
-    assert [i.tracking for i in read_invoice_file(data)] == ["111"]
+    assert [i.tracking for i in read_invoice_file(data)] == ["111", ""]
+    result = match_invoices(normalize_orders(orders(order_row("1"))), read_invoice_file(data))
+    assert [a.tracking for a in result.matched()] == ["111"]
+    assert [i.seq for i in result.invoices_without_tracking] == ["2"]
     with pytest.raises(ValueError, match="운송장번호"):
         read_invoice_file(hanjin_xlsx(hanjin_row(1, "1"), columns=["순번", "받으시는 분"]))
     with pytest.raises(ValueError, match="xlsx"):
@@ -161,3 +167,39 @@ def test_upload_workbook_adds_dispatch_columns_for_api_table():
     sheet = openpyxl.load_workbook(BytesIO(data)).active
     assert [c.value for c in sheet[1]] == ["상품주문번호", "주문번호", "배송방법", "택배사", "송장번호", "우편번호", "수취인명"]
     assert [c.value for c in sheet[2]][:5] == ["1", "2", "택배,등기,소포", "한진택배", "111"]
+
+
+def _returned(order_rows, returned_rows):
+    return match_invoices(normalize_orders(orders(*order_rows)), read_invoice_file(returned_xlsx(*returned_rows)))
+
+
+def test_returned_purchase_order_matches_without_zip():
+    result = _returned([order_row("1"), order_row("2", "김철수", 수취인연락처1="010-0000-0002")],
+                       [returned_row("111"), returned_row("222", "김철수", 전화번호="010-0000-0002")])
+    assert {a.tracking: a.product_order_ids for a in result.matched()} == {"111": ("1",), "222": ("2",)}
+
+
+def test_returned_row_with_only_one_of_phone_or_address_is_checked():
+    (a,) = _returned([order_row("1")], [returned_row("111", 전화번호="010-9999-9999")]).assignments
+    assert a.status == STATUS_CHECK and a.includable and a.reason == "전화번호 다름"
+
+
+def test_returned_namesake_with_other_phone_and_address_is_not_a_candidate():
+    result = _returned([order_row("1")], [returned_row("111", 전화번호="010-9999-9999", 주소="부산 어딘가 1")])
+    assert result.assignments == () and len(result.invoices_without_order) == 1
+
+
+def test_returned_rows_without_name_or_tracking_are_reported_by_line():
+    result = _returned([order_row("1")], [returned_row("111"), returned_row(None, None, 전화번호=None, 주소=None)])
+    assert [a.tracking for a in result.matched()] == ["111"]
+    assert [(i.seq, i.item_name) for i in result.invoices_without_tracking] == [("3", "초벌장어 1kg")]
+
+
+def test_returned_address_with_tabs_and_newlines_still_matches():
+    messy = chr(9) + ADDRESS.replace(" 101호", chr(10) + "101호")
+    assert len(_returned([order_row("1")], [returned_row("111", 주소=messy)]).matched()) == 1
+
+
+def test_file_with_neither_format_is_refused():
+    with pytest.raises(ValueError, match="송장 파일이 아닙니다"):
+        read_invoice_file(hanjin_xlsx(hanjin_row(1, "1"), columns=["받는사람", "전화번호", "주소"]))
