@@ -7,6 +7,7 @@ import streamlit as st
 from ui import (
     dictionary_page,
     history_page,
+    invoice_page,
     layout_page,
     order_page,
     preview_page,
@@ -40,6 +41,7 @@ def main() -> None:
     navigation = st.navigation(
         [
             st.Page(order_page.render, title="주문처리", icon="📦", url_path="order", default=True),
+            st.Page(invoice_page.render, title="송장 입력", icon="🚚", url_path="invoice"),
             st.Page(dictionary_page.render, title="품목 관리", icon="📖", url_path="dictionary"),
             st.Page(layout_page.render, title="발주서 양식", icon="📄", url_path="layout"),
             st.Page(preview_page.render, title="결과 확인", icon="🧪", url_path="preview"),
