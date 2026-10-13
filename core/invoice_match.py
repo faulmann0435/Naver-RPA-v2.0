@@ -20,7 +20,6 @@ from io import BytesIO
 
 import openpyxl
 import pandas as pd
-import xlrd
 
 KST = timezone(timedelta(hours=9))  # own copy: the Streamlit app ships without worker/
 CARRIER_NAME = "한진택배"
@@ -210,6 +209,10 @@ def _open_sheet(data: bytes, preferred: str | None = None):
 def _sheet_rows(data: bytes) -> list[tuple]:
     """Rows of the first sheet of an .xlsx or an old .xls (suppliers' files are often slightly damaged)."""
     if data.startswith(b"\xd0\xcf\x11\xe0"):
+        try:
+            import xlrd  # only .xls needs it; a PC without it still runs everything else
+        except ImportError as exc:
+            raise ValueError(".xls 파일을 읽는 부품(xlrd)이 없습니다. 설치.bat을 한 번 다시 실행해 주세요.") from exc
         try:
             book = xlrd.open_workbook(file_contents=data, ignore_workbook_corruption=True)
         except Exception as exc:  # any unreadable-file error becomes one readable message
