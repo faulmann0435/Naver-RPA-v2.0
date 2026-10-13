@@ -64,7 +64,7 @@ def test_pending_roundtrip(tmp_path):
     path = tmp_path / "pending.json"
     run = _prepare(tmp_path, [api_item("1")], hanjin_row(1, "111"))
     run_id = add_pending(run, path)
-    assert read_pending(path)[run_id]["matched"] == [["1", "111"]]
+    assert read_pending(path)[run_id]["matched"] == [{"ids": ["1"], "tracking": "111", "courier": "HANJIN"}]
     remove_pending(run_id, path)
     assert read_pending(path) == {}
 
@@ -114,3 +114,13 @@ def test_supplier_purchase_order_with_tracking_column_is_matched_and_blank_rows_
     assert [a.tracking for a in run.result.matched()] == ["111"]
     text = invoice_summary(run)
     assert "송장번호가 없는 줄 1개" in text and "3번 줄 · 받는 사람 없음 · 초벌장어 9kg" in text
+
+
+def test_register_sends_each_shipment_with_its_own_courier(tmp_path):
+    entry = {"when": "10/13 09:05", "includable": [], "matched": [
+        {"ids": ["1"], "tracking": "600663392321", "courier": "CJGLS"},
+        {"ids": ["2", "3"], "tracking": "6890179430672", "courier": "EPOST"}]}
+    sent = []
+    register(entry, False, dispatch=lambda items: sent.extend(items) or DispatchResult(()),
+             ledger=tmp_path / "ledger.json")
+    assert [(i.product_order_id, i.courier_code) for i in sent] == [("1", "CJGLS"), ("2", "EPOST"), ("3", "EPOST")]

@@ -132,3 +132,11 @@ def test_switch_reads_environment(monkeypatch):
     assert dispatch_enabled()
     monkeypatch.setenv("INVOICE_DISPATCH_ENABLED", "0")
     assert not dispatch_enabled()
+
+
+def test_each_item_carries_its_own_courier_code():
+    items = [DispatchItem("1", "600663392321", "CJGLS"), DispatchItem("2", "45287820340", "KGB")]
+    session = FakeSession(_ok(items))
+    _send(items, session)
+    codes = [o["deliveryCompanyCode"] for o in session.calls[0][1]["json"]["dispatchProductOrders"]]
+    assert codes == ["CJGLS", "KGB"]

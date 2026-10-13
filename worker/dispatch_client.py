@@ -42,6 +42,7 @@ CODE_REQUEST_FAILED, CODE_NO_RESULT = "REQUEST_FAILED", "NO_RESULT"
 class DispatchItem:
     product_order_id: str
     tracking: str
+    courier_code: str = COURIER_CODE
 
 
 @dataclass(frozen=True)
@@ -80,7 +81,7 @@ def _body(chunk: Sequence[DispatchItem], when: datetime) -> dict:
     stamp = _api_time(when)
     return {"dispatchProductOrders": [
         {"productOrderId": i.product_order_id, "deliveryMethod": DELIVERY_METHOD,
-         "deliveryCompanyCode": COURIER_CODE, "trackingNumber": i.tracking, "dispatchDate": stamp}
+         "deliveryCompanyCode": i.courier_code, "trackingNumber": i.tracking, "dispatchDate": stamp}
         for i in chunk]}
 
 

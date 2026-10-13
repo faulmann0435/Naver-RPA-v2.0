@@ -8,7 +8,7 @@ run anything. Nothing is sent to the delivery sites: the owner shares the files 
 and taps [✅ 카톡 공유 완료], which records the orders so they are not sent twice.
 [📋 발송 안 된 주문 전부] ignores that record and puts every unshipped order back (30 days).
 
-송장: when the owner forwards the 한진 송장 xlsx, the bot matches it to the unshipped Naver orders,
+송장: when the owner forwards a tracking file (한진 file or a supplier's list, xlsx/xls), the bot matches it to the unshipped Naver orders,
 sends the filled upload xlsx and a summary with buttons. Tapping [🚚 송장 등록] registers the tracking
 numbers on Naver (worker.dispatch_client; really sent only when INVOICE_DISPATCH_ENABLED=1).
 """
@@ -228,8 +228,8 @@ class OrderBot:
                          reply_markup=run_keyboard())
 
     def _on_document(self, chat: int, document: dict) -> None:
-        if not str(document.get("file_name", "")).lower().endswith(".xlsx"):
-            self.tg.send(chat, "한진 송장 엑셀(.xlsx) 파일을 보내 주세요. .xls 파일은 .xlsx로 저장한 뒤 보내면 됩니다.")
+        if not str(document.get("file_name", "")).lower().endswith((".xlsx", ".xls")):
+            self.tg.send(chat, "송장 엑셀 파일(.xlsx 또는 .xls)을 보내 주세요.")
             return
         self.tg.send(chat, "⏳ 송장 파일 확인 중…")
         try:

@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core.invoice_match import (
+    COURIER_CODES,
     NOTE_NO_ORDER,
     Assignment,
     MatchResult,
@@ -74,12 +75,20 @@ def _write_pending(pending: dict[str, dict], path: Path) -> None:
     path.write_text(json.dumps(pending, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def _groups(assignments: tuple[Assignment, ...]) -> list[list[str]]:
-    return [[*a.product_order_ids, a.tracking] for a in assignments]
+def _groups(assignments: tuple[Assignment, ...]) -> list[dict]:
+    return [{"ids": list(a.product_order_ids), "tracking": a.tracking, "courier": COURIER_CODES[a.carrier]}
+            for a in assignments]
+
+
+def _read_group(group) -> tuple[list[str], str, str]:
+    """(ids, tracking, courier code); older pending files stored [ids..., tracking] for 한진 only."""
+    if isinstance(group, dict):
+        return list(group["ids"]), group["tracking"], group["courier"]
+    return list(group[:-1]), group[-1], COURIER_CODES["한진택배"]
 
 
 def run_entry(run: InvoiceRun) -> dict:
-    """What a pending run stores: per shipment [product order ids..., tracking number]."""
+    """What a pending run stores: per shipment its product order ids, tracking number and courier code."""
     return {"when": f"{run.when:%m/%d %H:%M}", "matched": _groups(run.result.matched()),
             "includable": _groups(run.result.includable())}
 
@@ -123,8 +132,10 @@ def register(entry: dict, include_checks: bool,
     """Send the pending run's tracking numbers to Naver; record the really registered ones."""
     done = set(read_ledger(ledger))
     groups = entry["includable" if include_checks else "matched"]
-    tracking_of = {pid: group[-1] for group in groups for pid in group[:-1] if pid not in done}
-    result = dispatch([DispatchItem(pid, tracking) for pid, tracking in tracking_of.items()])
+    items = {pid: DispatchItem(pid, tracking, courier)
+             for ids, tracking, courier in map(_read_group, groups) for pid in ids if pid not in done}
+    tracking_of = {pid: item.tracking for pid, item in items.items()}
+    result = dispatch(list(items.values()))
     if not result.simulated and result.success_ids:
         mark_registered({pid: tracking_of[pid] for pid in result.success_ids if pid in tracking_of},
                         now(), ledger)

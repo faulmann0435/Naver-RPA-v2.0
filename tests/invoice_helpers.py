@@ -62,6 +62,22 @@ def returned_xlsx(*rows: dict) -> bytes:
     return _workbook_bytes("발주", [RETURNED_COLUMNS] + [[r.get(c) for c in RETURNED_COLUMNS] for r in rows])
 
 
+LIST_COLUMNS = ["발송일자", "업체명", "택배사", "운송장번호", "이름", "연락처", "품목및수량", "면세액", "비고"]
+
+
+def list_row(tracking: str, carrier: str = "씨제이대한통운", name: str = "홍길동", **over) -> dict:
+    """A row of a supplier's shipping list (several couriers mixed, no address)."""
+    row = {"발송일자": "2026-10-01", "업체명": "최고다 농수산", "택배사": carrier, "운송장번호": tracking,
+           "이름": name, "연락처": "010-0000-0001", "품목및수량": "통통 생물 오징어 1kg x 1", "면세액": 16500.0}
+    return {**row, **over}
+
+
+def list_xlsx(*rows: dict) -> bytes:
+    """Like the supplier's file: a totals block above the header."""
+    top = [[None] * 6 + ["10월01일 ~ 10월01일", "정산총액", 1101800.0], [None] * 9, [None] * 7 + ["면세총액"]]
+    return _workbook_bytes("Worksheet", top + [LIST_COLUMNS] + [[r.get(c) for c in LIST_COLUMNS] for r in rows])
+
+
 def order_export_xlsx(*rows: dict) -> bytes:
     """Like Naver's export: an instruction line first, then the header."""
     lines = [["안내: 이 줄은 설명입니다."] + [None] * (len(ORDER_COLUMNS) - 1), ORDER_COLUMNS]

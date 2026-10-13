@@ -330,10 +330,10 @@ def test_nothing_to_register_means_no_buttons(tmp_path):
     assert "inline_keyboard" not in tg.sent[-1][1]["reply_markup"] and "주문 못 찾은 송장 1건" in tg.texts()[-1]
 
 
-def test_non_xlsx_document_asks_for_the_hanjin_file(tmp_path):
+def test_non_excel_document_asks_for_a_tracking_file(tmp_path):
     tg, bot, _ = _invoice_bot(tmp_path, [], [])
-    bot.handle(_doc("송장.xls"))
-    assert [m for m, _ in tg.sent] == ["sendMessage"] and ".xlsx" in tg.texts()[0]
+    bot.handle(_doc("송장.pdf"))
+    assert [m for m, _ in tg.sent] == ["sendMessage"] and ".xls" in tg.texts()[0]
 
 
 def test_unreadable_document_is_reported(tmp_path):

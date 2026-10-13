@@ -23,3 +23,13 @@ def test_every_order_gets_the_tracking_number_a_human_chose():
     assert len(result.assignments) == 11 and len(got) == 12
     assert all(a.status == "MATCHED" for a in result.assignments)
     assert len(result.invoices_without_order) == 6 and result.orders_without_invoice == ()
+
+
+SUPPLIER_LIST = REAL_DIR / "갑오징어 생물오징어 등 송장.xls"
+
+
+@pytest.mark.skipif(not SUPPLIER_LIST.exists(), reason="real supplier list not present")
+def test_real_supplier_xls_list_is_read_with_its_couriers():
+    invoices = read_invoice_file(SUPPLIER_LIST.read_bytes())
+    assert len(invoices) == 66 and all(i.tracking.isdigit() for i in invoices)
+    assert {i.carrier for i in invoices} == {"CJ대한통운", "우체국택배", "로젠택배"}
