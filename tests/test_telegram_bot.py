@@ -215,3 +215,148 @@ def test_failure_message_explains_ip_not_allowed():
     text = failure_message(NaverApiError("HTTP 403: GW.IP_NOT_ALLOWED 호출이 허용되지 않은 IP입니다."))
     assert "IP_NOT_ALLOWED" in text and "새 IP를 등록" in text
     assert "새 IP" not in failure_message(RuntimeError("boom"))
+
+
+# --- 송장 (tracking numbers) ----------------------------------------------------------------------
+
+from functools import partial  # noqa: E402
+
+from tests.invoice_helpers import api_item, hanjin_row, hanjin_xlsx  # noqa: E402
+from worker.dispatch_client import DispatchFailure, DispatchResult, dispatch_or_simulate  # noqa: E402
+from worker.invoice_run import prepare_invoices, register  # noqa: E402
+from worker.invoice_run import read_ledger as read_invoice_ledger  # noqa: E402
+from worker.invoice_run import read_pending as read_invoice_pending  # noqa: E402
+
+
+class InvoiceTelegram(FakeTelegram):
+    def download(self, file_id):
+        self.sent.append(("download", {"file_id": file_id}))
+        return hanjin_xlsx(*self.rows)
+
+
+def _doc(name="한진 송장파일.xlsx"):
+    return {"message": {"chat": {"id": OWNER}, "document": {"file_name": name, "file_id": "f1"}}}
+
+
+def _invoice_bot(tmp_path, items, hanjin, dispatch=None, enabled=False):
+    tg = InvoiceTelegram()
+    tg.rows = hanjin
+    ledger = tmp_path / "ledger.json"
+    send = dispatch or (lambda batch: dispatch_or_simulate(batch, enabled=enabled))
+    bot = OrderBot(tg, frozenset({OWNER}), pending_file=tmp_path / "p.json",
+                   invoice_preparer=partial(prepare_invoices, fetch=lambda: items, ledger=ledger),
+                   invoice_register=partial(register, dispatch=send, ledger=ledger),
+                   invoice_pending_file=tmp_path / "inv.json")
+    return tg, bot, ledger
+
+
+def _buttons(tg):
+    markup = tg.sent[-1][1]["reply_markup"]["inline_keyboard"]
+    return [(row[0]["text"], row[0]["callback_data"]) for row in markup]
+
+
+def _two_orders():
+    items = [api_item("1"), api_item("2", "김철수")]
+    hanjin = [hanjin_row(1, "111"), hanjin_row(2, "222", "김철수", **{"받으시는 분 전화": "01099999999"})]
+    return items, hanjin
+
+
+def test_document_gets_summary_files_and_buttons(tmp_path):
+    tg, bot, _ = _invoice_bot(tmp_path, *_two_orders())
+    bot.handle(_doc())
+    assert [m for m, _ in tg.sent] == ["sendMessage", "download", "sendDocument", "sendDocument", "sendMessage"]
+    assert tg.texts()[0] == "⏳ 송장 파일 확인 중…"
+    labels = [text for text, _ in _buttons(tg)]
+    assert labels == ["🚚 일치 1건 송장 등록", "🚚 확인 필요 1건 포함 (2건) 등록", "✖ 취소"]
+    assert all(data.startswith("inv:") for _, data in _buttons(tg))
+
+
+def test_nothing_to_register_means_no_buttons(tmp_path):
+    tg, bot, _ = _invoice_bot(tmp_path, [api_item("1")], [hanjin_row(1, "111", "이영희")])
+    bot.handle(_doc())
+    assert "inline_keyboard" not in tg.sent[-1][1]["reply_markup"] and "주문 못 찾은 송장 1건" in tg.texts()[-1]
+
+
+def test_non_xlsx_document_asks_for_the_hanjin_file(tmp_path):
+    tg, bot, _ = _invoice_bot(tmp_path, [], [])
+    bot.handle(_doc("송장.xls"))
+    assert [m for m, _ in tg.sent] == ["sendMessage"] and ".xlsx" in tg.texts()[0]
+
+
+def test_unreadable_document_is_reported(tmp_path):
+    tg, bot, _ = _invoice_bot(tmp_path, [], [])
+    tg.download = lambda file_id: b"junk"
+    bot.handle(_doc())
+    assert tg.texts()[-1].startswith("⚠️ 송장 확인 실패")
+
+
+def test_matched_button_simulated_does_not_touch_the_ledger(tmp_path):
+    tg, bot, ledger = _invoice_bot(tmp_path, *_two_orders())
+    bot.handle(_doc())
+    bot.handle(_press(_buttons(tg)[0][1]))
+    assert "🧪 시험 모드" in tg.texts()[-1] and "등록했을 송장 1건" in tg.texts()[-1]
+    assert not ledger.exists() and read_invoice_pending(tmp_path / "inv.json") == {}
+
+
+def test_all_button_really_registers_and_records_only_successes(tmp_path):
+    sent = []
+
+    def dispatch(batch):
+        sent.extend((i.product_order_id, i.tracking) for i in batch)
+        return DispatchResult(("1",), (DispatchFailure("2", "E1", "이미 발송된 주문"),))
+
+    tg, bot, ledger = _invoice_bot(tmp_path, *_two_orders(), dispatch=dispatch)
+    bot.handle(_doc())
+    bot.handle(_press(_buttons(tg)[1][1]))
+    assert sent == [("1", "111"), ("2", "222")]
+    text = tg.texts()[-1]
+    assert "등록 완료 송장 1건" in text and "2 · 이미 발송된 주문" in text and "시험 모드" not in text
+    assert list(read_invoice_ledger(ledger)) == ["1"]
+    assert ("editMessageReplyMarkup", {"chat_id": OWNER, "message_id": 5, "reply_markup": {"inline_keyboard": []}}) in tg.sent
+
+
+def test_cancel_and_expired_buttons(tmp_path):
+    sent = []
+    tg, bot, ledger = _invoice_bot(tmp_path, *_two_orders(), dispatch=lambda b: sent.append(b) or DispatchResult(()))
+    bot.handle(_doc())
+    cancel = _buttons(tg)[2][1]
+    bot.handle(_press(cancel))
+    assert tg.texts()[-1] == "취소했습니다. 등록하지 않았습니다."
+    bot.handle(_press(cancel))
+    assert "만료" in tg.texts()[-1] and sent == []
+
+
+def test_invoice_button_survives_a_restart(tmp_path):
+    tg, bot, _ = _invoice_bot(tmp_path, *_two_orders())
+    bot.handle(_doc())
+    data = _buttons(tg)[0][1]
+    _, fresh, _ = _invoice_bot(tmp_path, [], [])
+    fresh.tg = tg
+    fresh.handle(_press(data))
+    assert "송장 1건" in tg.texts()[-1]
+
+
+def test_download_error_never_shows_the_token():
+    from worker.telegram_bot import Telegram
+
+    class Boom:
+        def post(self, url, **kw):
+            class R:
+                def json(self):
+                    return {"ok": True, "result": {"file_path": "documents/a.xlsx"}}
+            return R()
+
+        def get(self, url, **kw):
+            import requests
+            raise requests.ConnectionError(f"failed {url}")
+
+    with pytest.raises(RuntimeError) as err:
+        Telegram("SECRET-TOKEN", Boom()).download("f1")
+    assert "SECRET-TOKEN" not in str(err.value) and err.value.__cause__ is None
+
+
+def test_failure_message_names_what_failed():
+    from worker.telegram_bot import failure_message
+
+    assert failure_message(RuntimeError("x")).startswith("⚠️ 발주 처리 실패:")
+    assert failure_message(RuntimeError("x"), "송장 등록").startswith("⚠️ 송장 등록 실패:")

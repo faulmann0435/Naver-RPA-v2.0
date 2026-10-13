@@ -6,6 +6,10 @@
 allowed, the bot only answers with that chat's id so it can be added. Only allowed chats can
 run anything. Nothing is sent to the delivery sites: the owner shares the files on KakaoTalk
 and taps [✅ 카톡 공유 완료], which records the orders so they are not sent twice.
+
+송장: when the owner forwards the 한진 송장 xlsx, the bot matches it to the unshipped Naver orders,
+sends the filled upload xlsx and a summary with buttons. Tapping [🚚 송장 등록] registers the tracking
+numbers on Naver (worker.dispatch_client; really sent only when INVOICE_DISPATCH_ENABLED=1).
 """
 from __future__ import annotations
 
@@ -23,6 +27,19 @@ from pathlib import Path
 
 import requests
 
+from worker.dispatch_client import DispatchResult
+from worker.invoice_run import (
+    PENDING_FILE as INVOICE_PENDING_FILE,
+)
+from worker.invoice_run import (
+    InvoiceRun,
+    add_pending,
+    invoice_summary,
+    prepare_invoices,
+    register,
+    remove_pending,
+)
+from worker.invoice_run import read_pending as read_invoice_pending
 from worker.naver_client import ENV_FILE, read_env_file
 from worker import single_instance
 from worker.order_run import (
@@ -41,6 +58,9 @@ RUN_BUTTON = "📦 발주 처리"
 DONE_PREFIX = "done:"
 PENDING_SENT = "sent:"  # + the asked-about runs, so an old question cannot settle a newer run
 PENDING_REDO = "redo:"
+INVOICE_PREFIX = "inv:"  # inv:<run id>:m (matched only) | a (matched + checkable) | x (cancel)
+MAX_FAILURE_LINES = 20
+FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
 POLL_TIMEOUT = 30
 HTTP_TIMEOUT = POLL_TIMEOUT + 10
 TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
@@ -95,6 +115,19 @@ class Telegram:
     def send_file(self, chat_id: int, name: str, data: bytes) -> dict:
         return self.call("sendDocument", files={"document": (name, data)}, chat_id=chat_id)
 
+    def download(self, file_id: str) -> bytes:
+        """Bytes of a file sent to the bot. Errors never carry the URL, which contains the token."""
+        path = self.call("getFile", file_id=file_id).get("file_path")
+        if not path:
+            raise RuntimeError("Telegram getFile: file_path 가 없습니다.")
+        try:
+            resp = self._http.get(FILE_API.format(token=self._token, path=path), timeout=HTTP_TIMEOUT)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Telegram 파일 내려받기 실패: {type(exc).__name__}") from None
+        if not resp.ok:
+            raise RuntimeError(f"Telegram 파일 내려받기 실패: HTTP {resp.status_code}")
+        return resp.content
+
 
 class TelegramNotifier:
     """Notifier for the downloads watcher: one message per line to every allowed chat."""
@@ -108,13 +141,28 @@ class TelegramNotifier:
             self._tg.send(chat, text)
 
 
-def failure_message(exc: Exception) -> str:
+def failure_message(exc: Exception, what: str = "발주 처리") -> str:
     """What the owner sees when a run fails; known causes get a plain-language hint."""
-    text = f"⚠️ 발주 처리 실패: {type(exc).__name__}: {str(exc)[:300]}"
+    text = f"⚠️ {what} 실패: {type(exc).__name__}: {str(exc)[:300]}"
     if IP_NOT_ALLOWED in str(exc):
         text += ("\n\n이 PC의 인터넷 주소(IP)가 바뀌어 네이버가 막았습니다. "
                  "커머스API센터에서 이 PC의 새 IP를 등록해야 합니다. 개발자에게 알려 주세요.")
     return text
+
+
+def dispatch_report(result: DispatchResult) -> str:
+    """What the owner reads after tapping a 송장 등록 button."""
+    lines = []
+    if result.simulated:
+        lines.append("🧪 시험 모드: 네이버에 실제로 등록하지 않았습니다 (INVOICE_DISPATCH_ENABLED 꺼짐).")
+    done = "등록했을 송장" if result.simulated else "등록 완료 송장"
+    lines.append(f"✅ {done} {len(result.success_ids)}건")
+    if result.failures:
+        lines.append(f"⚠️ 실패 {len(result.failures)}건")
+        lines += [f"· {f.id} · {f.message or f.code}" for f in result.failures[:MAX_FAILURE_LINES]]
+        if len(result.failures) > MAX_FAILURE_LINES:
+            lines.append(f"… 그 외 {len(result.failures) - MAX_FAILURE_LINES}건")
+    return "\n".join(lines)
 
 
 def run_keyboard() -> dict:
@@ -130,9 +178,14 @@ class OrderBot:
     def __init__(self, tg: Telegram, allowed: frozenset[int],
                  runner: Callable[[], RunResult] = run_orders,
                  mark: Callable[[tuple[str, ...]], int] = mark_shared,
-                 pending_file: Path = PENDING_FILE):
+                 pending_file: Path = PENDING_FILE,
+                 invoice_preparer: Callable[[bytes], InvoiceRun] = prepare_invoices,
+                 invoice_register: Callable[..., DispatchResult] = register,
+                 invoice_pending_file: Path = INVOICE_PENDING_FILE):
         self.tg, self.allowed, self.runner, self.mark = tg, allowed, runner, mark
         self.pending_file = pending_file  # runs awaiting [공유 완료]; a file so a restart keeps them
+        self.invoice_preparer, self.invoice_register = invoice_preparer, invoice_register
+        self.invoice_pending_file = invoice_pending_file  # 송장 runs awaiting a button tap
 
     @property
     def pending(self) -> dict[str, dict]:
@@ -153,14 +206,46 @@ class OrderBot:
             log.info("등록 안 된 대화방 %s", chat)
             self.tg.send(chat, f"이 대화방 번호는 {chat} 입니다. 개발자에게 알려 주세요.")
             return
-        if message.get("text") == RUN_BUTTON:
+        if message.get("document"):
+            self._on_document(chat, message["document"])
+        elif message.get("text") == RUN_BUTTON:
             if self.pending:
                 self._ask_about_pending(chat)
             else:
                 self._run(chat)
         else:
-            self.tg.send(chat, f"아래 [{RUN_BUTTON}] 버튼을 누르면 새 주문으로 발주서를 만듭니다.",
+            self.tg.send(chat, f"아래 [{RUN_BUTTON}] 버튼을 누르면 새 주문으로 발주서를 만듭니다.\n"
+                               "한진 송장 엑셀 파일을 이 대화방에 보내면 송장을 등록합니다.",
                          reply_markup=run_keyboard())
+
+    def _on_document(self, chat: int, document: dict) -> None:
+        if not str(document.get("file_name", "")).lower().endswith(".xlsx"):
+            self.tg.send(chat, "한진 송장 엑셀(.xlsx) 파일을 보내 주세요. .xls 파일은 .xlsx로 저장한 뒤 보내면 됩니다.")
+            return
+        self.tg.send(chat, "⏳ 송장 파일 확인 중…")
+        try:
+            run = self.invoice_preparer(self.tg.download(document["file_id"]))
+        except Exception as exc:  # report every failure to the owner instead of going silent
+            log.exception("송장 확인 실패")
+            self.tg.send(chat, failure_message(exc, "송장 확인"))
+            return
+        for f in run.files:
+            self.tg.send_file(chat, f.filename, f.data)
+        self.tg.send(chat, invoice_summary(run), **self._invoice_markup(run))
+
+    def _invoice_markup(self, run: InvoiceRun) -> dict:
+        matched, checks = len(run.result.matched()), len(run.result.includable_checks())
+        if not matched and not checks:
+            return {"reply_markup": run_keyboard()}
+        run_id = add_pending(run, self.invoice_pending_file)
+        buttons = []
+        if matched:
+            buttons.append((f"🚚 일치 {matched}건 송장 등록", "m"))
+        if checks:
+            buttons.append((f"🚚 확인 필요 {checks}건 포함 ({matched + checks}건) 등록", "a"))
+        buttons.append(("✖ 취소", "x"))
+        rows = [[{"text": text, "callback_data": f"{INVOICE_PREFIX}{run_id}:{code}"}] for text, code in buttons]
+        return {"reply_markup": {"inline_keyboard": rows}}
 
     def _run(self, chat: int) -> None:
         self.tg.send(chat, "⏳ 네이버에서 주문을 가져오는 중…")
@@ -201,6 +286,9 @@ class OrderBot:
             self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
             token = data.removeprefix(PENDING_SENT).removeprefix(PENDING_REDO)
             self._settle_pending(chat, query, token, sent=data.startswith(PENDING_SENT))
+        elif data.startswith(INVOICE_PREFIX):
+            self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
+            self._on_invoice_button(chat, query, data.removeprefix(INVOICE_PREFIX))
         elif data.startswith(DONE_PREFIX):
             self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
             self._confirm_run(chat, query, data.removeprefix(DONE_PREFIX))
@@ -211,6 +299,26 @@ class OrderBot:
                          reply_markup={"inline_keyboard": []})
         except RuntimeError:  # already cleared (a double tap): the reply below matters more
             log.info("버튼 지우기 생략: message %s", query["message"]["message_id"])
+
+    def _on_invoice_button(self, chat: int, query: dict, data: str) -> None:
+        run_id, _, choice = data.partition(":")
+        self._clear_buttons(chat, query)
+        entry = read_invoice_pending(self.invoice_pending_file).get(run_id)
+        if entry is None or choice not in ("m", "a", "x"):
+            self.tg.send(chat, "이 버튼은 만료됐습니다. 필요하면 송장 파일을 다시 보내 주세요.")
+            return
+        try:
+            if choice == "x":
+                self.tg.send(chat, "취소했습니다. 등록하지 않았습니다.", reply_markup=run_keyboard())
+                return
+            self.tg.send(chat, "⏳ 네이버에 송장을 등록하는 중…")
+            result = self.invoice_register(entry, include_checks=(choice == "a"))
+            self.tg.send(chat, dispatch_report(result), reply_markup=run_keyboard())
+        except Exception as exc:  # report every failure to the owner instead of going silent
+            log.exception("송장 등록 실패")
+            self.tg.send(chat, failure_message(exc, "송장 등록"))
+        finally:
+            remove_pending(run_id, self.invoice_pending_file)
 
     def _confirm_run(self, chat: int, query: dict, run_id: str) -> None:
         waiting = self.pending
