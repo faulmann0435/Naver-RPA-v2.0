@@ -120,6 +120,7 @@ def _new_entry_row(row: pd.Series, key: RowKey, user: str, now: str) -> dict[str
     out["enabled"] = _bool_text(_parse_bool(out["enabled"] or "1"))
     out["needs_review"] = _bool_text(_parse_bool(out["needs_review"]))
     out["append_to_end"] = _bool_text(_parse_bool(out["append_to_end"]))
+    out["own_vendor"] = _bool_text(_parse_bool(out["own_vendor"]))
     out["source"] = SOURCE_EXCEL
     out["updated_at"], out["updated_by"] = now, user
     out["created_at"] = now  # never taken from the file

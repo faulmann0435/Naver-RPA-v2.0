@@ -10,15 +10,19 @@ from core.dictionary import DictionaryEntry, DictionarySettings, ItemDictionary
 from core.engine import run_option_engine
 from core.exporter import export_individual_files
 from core.merger import (
+    RECEIPT_DATE_COL,
     filter_instruction_rows,
     merge_orders,
     merge_orders_with_dictionary,
     sort_by_payment_date,
 )
-from core.option_key import make_option_key, normalize_product_no
+from core.option_key import make_option_key, normalize_product_no, receipt_date
 from core.router import route_vendor
 
 DICT_ENTRY_COL = "_dict_entry"
+KIND_COL = "상품종류"
+ADDON_KIND = "추가구성상품"
+BUNDLE_COL = "배송비 묶음번호"
 UNMATCHED_COLUMNS = [
     "product_no", "option_key", "상품명", "옵션정보", "qty_example",
     "vendor_suggestion", "display_suggestion", "count",
@@ -80,6 +84,40 @@ def _unmatched_table(
     return pd.DataFrame(list(groups.values()), columns=UNMATCHED_COLUMNS)
 
 
+def follow_main_vendor(df: pd.DataFrame) -> pd.DataFrame:
+    """추가구성상품 rows take the form of their main product (same 묶음번호 + 상품번호).
+
+    When the main product's rows went to several forms, an add-on already on one of them stays;
+    otherwise the earliest 상품주문번호 wins. An add-on with no main row in its bundle keeps its own form,
+    and so does one whose dictionary entry has own_vendor (a separately shipped product sold as an add-on)."""
+    needed = (KIND_COL, BUNDLE_COL, "상품번호", "_VendorID")
+    if any(c not in df.columns for c in needed):
+        return df
+    is_addon = df[KIND_COL].astype(str).str.strip() == ADDON_KIND
+    if not is_addon.any():
+        return df
+    own = [bool(getattr(e, "own_vendor", False)) for e in df[DICT_ENTRY_COL]] if DICT_ENTRY_COL in df.columns else [False] * len(df)
+    keys = list(zip(df[BUNDLE_COL].astype(str), df["상품번호"].map(normalize_product_no)))
+    order = df["상품주문번호"].astype(str).tolist() if "상품주문번호" in df.columns else [""] * len(df)
+    mains: dict[tuple[str, str], list[tuple[str, object]]] = {}  # key -> [(상품주문번호, vendor)]
+    for key, number, vendor, addon in zip(keys, order, df["_VendorID"], is_addon):
+        if not addon:
+            mains.setdefault(key, []).append((number, vendor))
+
+    def followed(key: tuple[str, str], vendor: object) -> object:
+        candidates = mains.get(key)
+        if not candidates or vendor in {v for _, v in candidates}:
+            return vendor
+        return min(candidates, key=lambda c: c[0])[1]
+
+    out = df.copy()
+    out["_VendorID"] = [
+        followed(key, vendor) if addon and not keep else vendor
+        for key, vendor, addon, keep in zip(keys, df["_VendorID"], is_addon, own)
+    ]
+    return out
+
+
 def _stats(df: pd.DataFrame, entries: list[DictionaryEntry | None]) -> dict[str, int]:
     matched = [e for e in entries if e is not None]
     return {
@@ -125,6 +163,12 @@ def process_orders(
     if has_matches:
         df[DICT_ENTRY_COL] = pd.Series(entries, index=df.index, dtype=object)
         df["_VendorID"] = [e.vendor_id if e is not None else v for e, v in zip(entries, df["_VendorID"])]
+        # 예약발송 상품의 수령일은 사전 표기가 아니라 그 주문의 옵션에서 가져온다.
+        df[RECEIPT_DATE_COL] = [receipt_date(o) for o in _column_values(df, "옵션정보")]
+
+    # 3c. 추가구성상품(아이스팩·올리브오일·젓갈 등)은 본 상품의 발주양식을 따라간다.
+    #     단, 사전에서 own_vendor로 표시한 항목(따로 파는 참가리비 등)은 자기 발주양식을 유지한다.
+    df = follow_main_vendor(df)
     stats = _stats(df, entries)
 
     # 병합 전 정렬 (Pre-Merge Sort): 상품주문번호 오름차순
@@ -138,7 +182,7 @@ def process_orders(
         merged = merge_orders_with_dictionary(df, separator=settings.item_separator)
     else:
         merged = merge_orders(df, option_rules=option_rules)
-    merged = merged.drop(columns=[DICT_ENTRY_COL], errors="ignore")
+    merged = merged.drop(columns=[DICT_ENTRY_COL, RECEIPT_DATE_COL], errors="ignore")
 
     # 5. 결제일 기준 최종 정렬 (Sort by Payment Date)
     if "결제일" in merged.columns:

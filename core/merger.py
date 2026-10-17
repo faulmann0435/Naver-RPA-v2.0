@@ -8,6 +8,8 @@ from core.dictionary import render_entry
 from core.template import strip_invisible
 
 FILTER_PHRASE = "다운로드 받은 파일로 '엑셀 일괄발송' 처리하는 방법"
+RECEIPT_DATE_COL = "_receipt_date"
+RECEIPT_DATE_SEPARATOR = " / "
 
 
 def filter_instruction_rows(df):
@@ -133,30 +135,43 @@ def merge_orders(df, option_rules=None):
     return merged
 
 
+def _with_date(text, date):
+    """'10월 8일 수령 / text' for 예약발송 rows (v14.4 style); text unchanged when there is no date."""
+    return f"{date}{RECEIPT_DATE_SEPARATOR}{text}" if date else text
+
+
 def _dictionary_parts(dict_rows):
-    """Ordered display parts and append-to-end suffixes for the dictionary rows of a group."""
+    """Ordered display parts and append-to-end suffixes for the dictionary rows of a group.
+
+    Rows with different 수령일 are never summed together; each part carries its own date."""
     has_qty_col = "수량" in dict_rows.columns
-    totals = {}   # entry.key -> [entry, total_qty] (first-appearance order)
+    has_date_col = RECEIPT_DATE_COL in dict_rows.columns
+    totals = {}   # (entry.key, date) -> [entry, total_qty] (first-appearance order)
     for _, row in dict_rows.iterrows():
         entry = row["_dict_entry"]
         qty = _safe_int(row.get("수량"), 1) if has_qty_col else 1
-        if entry.key in totals:
-            totals[entry.key][1] += qty
+        date = (row[RECEIPT_DATE_COL] or "") if has_date_col else ""
+        total_key = (entry.key, date)
+        if total_key in totals:
+            totals[total_key][1] += qty
         else:
-            totals[entry.key] = [entry, qty]
+            totals[total_key] = [entry, qty]
 
     slots = {}    # slot id -> text (str) or accumulated kg (float); insertion order = first appearance
     suffixes = []
-    for key, (entry, total_qty) in totals.items():
+    for (key, date), (entry, total_qty) in totals.items():
         if entry.sum_group and entry.unit_weight_kg is not None:
-            slot = ("group", entry.sum_group)
+            slot = ("group", entry.sum_group, date)
             slots[slot] = slots.get(slot, 0.0) + entry.unit_weight_kg * total_qty
         elif entry.append_to_end:
             suffixes.append(render_entry(entry, total_qty))
         else:
-            slots[("entry", key)] = render_entry(entry, total_qty)
+            slots[("entry", key, date)] = render_entry(entry, total_qty)
     parts = [
-        f"{strip_invisible(slot[1])} {_format_weight(value)}" if slot[0] == "group" else value
+        _with_date(
+            f"{strip_invisible(slot[1])} {_format_weight(value)}" if slot[0] == "group" else value,
+            slot[2],
+        )
         for slot, value in slots.items()
     ]
     return parts, suffixes
@@ -181,7 +196,7 @@ def merge_orders_with_dictionary(df, separator=" / "):
         if suffixes:
             text = (text + " " if text else "") + " ".join(suffixes)
         return _aggregate_row(
-            gdf.drop(columns=["_dict_entry"]), group_cols, text,
+            gdf.drop(columns=["_dict_entry", RECEIPT_DATE_COL], errors="ignore"), group_cols, text,
             auto_weight if has_weight_col else 0.0, has_weight_col,
         )
 

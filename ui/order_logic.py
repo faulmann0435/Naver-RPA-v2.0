@@ -233,7 +233,7 @@ def item_row(item: UnmatchedItem, values: FormValues) -> dict:
         "product_no": item.product_no, "option_key": item.option_key, "product_name_ref": item.name,
         "option_raw_ref": item.option, **{k: fields[k] for k in (
             "vendor_id", "display_template", "display_template_qty1", "sum_group", "unit_weight_kg",
-            "append_to_end",
+            "append_to_end", "own_vendor",
         )},
     }
 

@@ -33,6 +33,7 @@ class FormValues:
     append_to_end: bool = False
     needs_review: bool = False
     enabled: bool = True
+    own_vendor: bool = False
 
 
 def _s(value: object) -> str:
@@ -48,6 +49,7 @@ def values_from_row(row: Mapping[str, object]) -> FormValues:
         sum_group=_s(row.get("sum_group")),
         unit_weight_kg=_parse_float(row.get("unit_weight_kg")),
         append_to_end=_parse_bool(row.get("append_to_end")),
+        own_vendor=_parse_bool(row.get("own_vendor")),
         needs_review=_parse_bool(row.get("needs_review")),
         enabled=_parse_bool(row.get("enabled")),
     )
@@ -66,6 +68,7 @@ def row_fields(values: FormValues) -> dict[str, str]:
         "sum_group": values.sum_group.strip(),
         "unit_weight_kg": weight_text(values.unit_weight_kg),
         "append_to_end": "1" if values.append_to_end else "0",
+        "own_vendor": "1" if values.own_vendor else "0",
         "needs_review": "1" if values.needs_review else "0",
         "enabled": "1" if values.enabled else "0",
     }

@@ -107,6 +107,8 @@ def _new_row(row: dict, author: Author, now: str, settings: DictionarySettings) 
     )
     if not base["append_to_end"]:
         base["append_to_end"] = "0"
+    if not base["own_vendor"]:
+        base["own_vendor"] = "0"
     return base
 
 

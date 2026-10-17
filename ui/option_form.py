@@ -30,6 +30,11 @@ ADVANCED_HELP = (
     "예) ★제수용 피문어 1kg + 0.5kg + (자숙) → ★제수용 피문어 1.5kg (자숙)"
 )
 
+OWN_VENDOR_HELP = (
+    "추가상품으로 팔렸어도 본상품 발주서로 옮기지 않고 이 항목의 발주양식으로 보냅니다 "
+    "(예: 다른 곳에서 보내는 참가리비)"
+)
+
 
 def state_key(prefix: str, name: str) -> str:
     """session_state key of one widget of the form `prefix`."""
@@ -81,6 +86,7 @@ def init_state(prefix: str, initial: FormValues) -> FormValues:
     defaults = {
         "vendor": base.vendor, "qty1_on": bool(base.qty1_template), "qty1": base.qty1_template,
         "group": base.sum_group, "weight": base.unit_weight_kg, "append": base.append_to_end,
+        "own_vendor": base.own_vendor,
         "done": not base.needs_review, "enabled": base.enabled,
     }
     for name, value in defaults.items():
@@ -140,9 +146,9 @@ def _qty1_input(prefix: str) -> str:
     return str(st.text_input("1개일 때 문장", key=_key(prefix, "qty1")))
 
 
-def _advanced_inputs(prefix: str) -> tuple[str, float | None, bool]:
+def _advanced_inputs(prefix: str) -> tuple[str, float | None, bool, bool]:
     state = st.session_state
-    opened = bool(str(state[_key(prefix, "group")]).strip() or state[_key(prefix, "append")])
+    opened = bool(str(state[_key(prefix, "group")]).strip() or state[_key(prefix, "append")] or state[_key(prefix, "own_vendor")])
     with st.expander("여러 옵션 합치기 (고급)", expanded=opened):
         st.caption(ADVANCED_HELP)
         group = st.text_input("합산 이름", key=_key(prefix, "group"))
@@ -150,7 +156,8 @@ def _advanced_inputs(prefix: str) -> tuple[str, float | None, bool]:
             "1개당 무게(kg)", min_value=0.0, value=None, step=0.1, format="%g", key=_key(prefix, "weight")
         )
         append = st.checkbox("묶음 끝에 붙임", key=_key(prefix, "append"))
-    return group.strip(), (None if weight is None else float(weight)), append
+        own_vendor = st.checkbox("본주문 따라가지 않음", key=_key(prefix, "own_vendor"), help=OWN_VENDOR_HELP)
+    return group.strip(), (None if weight is None else float(weight)), append, own_vendor
 
 
 def _show_results(values: FormValues, vendor_ids: Sequence[str], qty_example: int) -> None:
@@ -178,11 +185,11 @@ def option_form(
         vendor_select(prefix, initial, vendor_ids)
     sentence, scale = _sentence_inputs(prefix)
     qty1 = _qty1_input(prefix)
-    group, weight, append = _advanced_inputs(prefix)
+    group, weight, append, own_vendor = _advanced_inputs(prefix)
     state = st.session_state
     values = FormValues(
         template=build_template(sentence, scale), qty1_template=qty1.strip(), vendor=str(state[_key(prefix, "vendor")]),
-        sum_group=group, unit_weight_kg=weight, append_to_end=append,
+        sum_group=group, unit_weight_kg=weight, append_to_end=append, own_vendor=own_vendor,
         needs_review=not bool(state[_key(prefix, "done")]), enabled=bool(state[_key(prefix, "enabled")]),
     )
     _show_results(values, vendor_ids, qty_example)

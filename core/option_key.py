@@ -9,6 +9,7 @@ from numbers import Integral
 
 OPTION_SEPARATOR = " / "
 GROUP_VALUE_SEPARATOR = ": "
+RECEIPT_DATE_GROUP_PREFIX = "수령일"
 _KEEP_CODEPOINTS_REMOVED = frozenset({0xFE0F, 0xFE0E, 0x200D})  # variation selectors, ZWJ
 _MODIFIER_RANGE = range(0x1F3FB, 0x1F400)  # emoji skin-tone modifiers
 _WHITESPACE = re.compile(r"\s+")
@@ -50,6 +51,17 @@ def make_option_key(option_text: object, ignored_groups: Sequence[str] = ()) -> 
         if normalized:
             kept.append(normalized)
     return OPTION_SEPARATOR.join(kept)
+
+
+def receipt_date(option_text: object) -> str:
+    """Value of the '수령일 …' option group (예약발송 상품), e.g. '10월 8일 수령'; '' when absent."""
+    if _is_missing(option_text):
+        return ""
+    for segment in str(option_text).split(OPTION_SEPARATOR):
+        group, found, value = segment.partition(GROUP_VALUE_SEPARATOR)
+        if found and normalize_text(group).startswith(RECEIPT_DATE_GROUP_PREFIX):
+            return normalize_text(value)
+    return ""
 
 
 def normalize_product_no(value: object) -> str:
