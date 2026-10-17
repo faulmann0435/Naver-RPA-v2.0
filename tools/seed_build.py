@@ -139,6 +139,7 @@ def _row(item: SeedItem, now: str) -> dict[str, object]:
         "sum_group": clean_display_text(entry.sum_group),
         "unit_weight_kg": "" if entry.unit_weight_kg is None else entry.unit_weight_kg,
         "append_to_end": 0,
+        "own_vendor": 0,
         "needs_review": 1,
         "enabled": 1,
         "source": item.source,

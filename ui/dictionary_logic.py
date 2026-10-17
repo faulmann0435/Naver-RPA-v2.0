@@ -27,28 +27,31 @@ V_ENABLED, V_REVIEW, V_NAME, V_OPTION = "사용", "검토 필요", "상품명", 
 V_VENDOR, V_TEMPLATE, V_QTY1 = "발주양식", "발주서 표기", "수량 1일 때 표기"
 V_CREATED = "등록일"
 V_GROUP, V_WEIGHT, V_APPEND, V_DELETE = "합산 이름", "1개당 무게(kg)", "묶음 끝에 붙임", "삭제"
+V_OWN = "본주문 따라가지 않음"
 BASIC_VIEW = [V_ENABLED, V_REVIEW, V_NAME, V_OPTION, V_CREATED, V_VENDOR, V_TEMPLATE, V_QTY1, V_DELETE]
-ADVANCED_VIEW = [V_ENABLED, V_REVIEW, V_NAME, V_OPTION, V_CREATED, V_VENDOR, V_TEMPLATE, V_QTY1, V_GROUP, V_WEIGHT, V_APPEND, V_DELETE]
+ADVANCED_VIEW = [V_ENABLED, V_REVIEW, V_NAME, V_OPTION, V_CREATED, V_VENDOR, V_TEMPLATE, V_QTY1, V_GROUP, V_WEIGHT, V_APPEND, V_OWN, V_DELETE]
 DISABLED_VIEW = [V_NAME, V_OPTION, V_CREATED]
 ALL_VENDORS = "전체"
 EXPORT_HEADERS = {
     "channel": "채널", "product_no": "상품번호", "option_key": "옵션(정규화)", "product_name_ref": "상품명",
     "option_raw_ref": "옵션", "vendor_id": "발주양식", "display_template": "발주서 표기",
     "display_template_qty1": "수량 1일 때 표기", "sum_group": "합산 이름", "unit_weight_kg": "1개당 무게(kg)",
-    "append_to_end": "묶음 끝에 붙임", "needs_review": "검토 필요", "enabled": "사용", "source": "출처",
+    "append_to_end": "묶음 끝에 붙임", "own_vendor": "본주문 따라가지 않음",
+    "needs_review": "검토 필요", "enabled": "사용", "source": "출처",
     "last_seen_at": "마지막 주문 확인", "updated_at": "수정 시각", "updated_by": "수정한 사람",
     "created_at": "등록 시각",
 }
 # Columns an exported file may lack (files exported before they existed still import).
-OPTIONAL_EXPORT_COLUMNS = ("created_at",)
+OPTIONAL_EXPORT_COLUMNS = ("created_at", "own_vendor")
 # dictionary column -> (view column, kind)
-_BOOL_FIELDS = {"enabled": V_ENABLED, "needs_review": V_REVIEW, "append_to_end": V_APPEND}
+_BOOL_FIELDS = {"enabled": V_ENABLED, "needs_review": V_REVIEW, "append_to_end": V_APPEND, "own_vendor": V_OWN}
 _TEXT_FIELDS = {
     "vendor_id": V_VENDOR, "display_template": V_TEMPLATE, "display_template_qty1": V_QTY1, "sum_group": V_GROUP,
 }
 EDIT_FIELDS = [*_BOOL_FIELDS, *_TEXT_FIELDS, "unit_weight_kg"]
 FIELD_LABELS = {
-    "enabled": "사용", "needs_review": "검토 필요", "append_to_end": "묶음 끝에 붙임", "vendor_id": "발주양식",
+    "enabled": "사용", "needs_review": "검토 필요", "append_to_end": "묶음 끝에 붙임", "own_vendor": "본주문 따라가지 않음",
+    "vendor_id": "발주양식",
     "display_template": "발주서 표기", "display_template_qty1": "수량 1일 때 표기", "sum_group": "합산 이름",
     "unit_weight_kg": "1개당 무게(kg)",
 }
@@ -109,6 +112,7 @@ def build_view(work: pd.DataFrame, rids: Sequence[int], advanced: bool) -> pd.Da
     view[V_GROUP] = part["sum_group"]
     view[V_WEIGHT] = pd.to_numeric(part["unit_weight_kg"], errors="coerce").astype(float)
     view[V_APPEND] = part["append_to_end"].map(_parse_bool)
+    view[V_OWN] = part["own_vendor"].map(_parse_bool)
     view[V_DELETE] = part[DELETE].astype(bool)
     return view[[RID, *(ADVANCED_VIEW if advanced else BASIC_VIEW)]]
 

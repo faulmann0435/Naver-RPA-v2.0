@@ -31,6 +31,7 @@ class DictionaryEntry:
     needs_review: bool = False
     product_name_ref: str = ""
     option_raw_ref: str = ""
+    own_vendor: bool = False  # 추가구성상품이어도 본상품 발주서로 옮기지 않는다
 
     @property
     def key(self) -> tuple[str, str]:
@@ -119,6 +120,7 @@ def _entry_from_row(row: pd.Series, settings: DictionarySettings) -> DictionaryE
         needs_review=_parse_bool(_cell(row, "needs_review")),
         product_name_ref=_text(_cell(row, "product_name_ref")),
         option_raw_ref=_text(_cell(row, "option_raw_ref")),
+        own_vendor=_parse_bool(_cell(row, "own_vendor")),
     )
 
 

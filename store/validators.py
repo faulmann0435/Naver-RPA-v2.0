@@ -21,9 +21,15 @@ COLUMN_LABELS: dict[str, str] = {
     "sum_group": "합산 이름",
     "unit_weight_kg": "1개당 무게(kg)",
     "append_to_end": "묶음 끝에 붙임",
+    "own_vendor": "본주문 따라가지 않음",
 }
 NO_QTY_WARNING = "문장에 수량 숫자가 없습니다. 2개 이상 주문이면 끝에 (x2)처럼 붙습니다"
+DATE_IN_TEXT_WARNING = (
+    "표기에 날짜(○월 ○일)가 있습니다. 예약발송 수령일은 주문마다 자동으로 앞에 붙으니 날짜는 빼 주세요"
+)
 _PLACEHOLDER = re.compile(r"\{[^{}]*\}")
+_MONTH_DAY = re.compile(r"\d{1,2}\s*월\s*\d{1,2}\s*일")
+_TEXT_COLUMNS = ("display_template", "display_template_qty1", "sum_group")
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,11 @@ def _row_issues(row: int | None, values: Mapping[str, object], vendor_ids: Seque
         issues.append(_error(row, "append_to_end", "합산 이름과 '묶음 끝에 붙임'은 함께 쓸 수 없습니다."))
     if template and not sum_group and not validate_template(template) and not has_qty_placeholder(template):
         issues.append(Issue("warning", row, "display_template", NO_QTY_WARNING))
+    issues += [
+        Issue("warning", row, column, DATE_IN_TEXT_WARNING)
+        for column in _TEXT_COLUMNS
+        if _MONTH_DAY.search(_text(values.get(column)))
+    ]
     return issues
 
 
