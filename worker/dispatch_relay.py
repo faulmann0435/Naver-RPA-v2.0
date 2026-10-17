@@ -19,6 +19,7 @@ from store import dispatch_queue as queue
 from store.base import DataStore
 from store.github_store import GitHubStore
 from worker.dispatch_client import DispatchResult
+from worker.dispatch_log import OUTBOX_FILE, failed_dict, flush_outbox, result_dict
 from worker.invoice_run import dispatch_report, register
 from worker.naver_adapter import KST
 from worker.order_run import SECRETS_FILE
@@ -52,18 +53,6 @@ def _remember(path: Path, request_id: str, record: dict) -> None:
     path.write_text(json.dumps(records, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def _result_dict(result: DispatchResult, now: datetime) -> dict:
-    return {"processed_at": now.isoformat(timespec="seconds"), "simulated": result.simulated,
-            "success_ids": list(result.success_ids),
-            "failures": [{"id": f.id, "code": f.code, "message": f.message} for f in result.failures],
-            "error": None}
-
-
-def _failed_dict(error: str, now: datetime) -> dict:
-    return {"processed_at": now.isoformat(timespec="seconds"), "simulated": False,
-            "success_ids": [], "failures": [], "error": error}
-
-
 def _dispatch(request: dict, register_fn: Callable[..., DispatchResult]) -> DispatchResult:
     queue.validate_items(request["items"])
     entry = {"when": str(request["created_at"]), "matched": request["items"], "includable": []}
@@ -94,12 +83,12 @@ def _handle(store: DataStore, request: dict, register_fn: Callable[..., Dispatch
     _remember(path, request_id, {"status": STARTED})  # before sending: a crash must not cause a second send
     try:
         result = _dispatch(request, register_fn)
-        record = {"status": queue.STATUS_DONE, "result": _result_dict(result, now())}
+        record = {"status": queue.STATUS_DONE, "result": result_dict(result, now())}
         report = dispatch_report(result)
     except Exception as exc:  # never retried: sending again could double-register
         log.exception("앱 요청 %s 처리 실패", request_id)
         error = f"{type(exc).__name__}: {str(exc)[:300]}"
-        record = {"status": queue.STATUS_FAILED, "result": _failed_dict(error, now())}
+        record = {"status": queue.STATUS_FAILED, "result": failed_dict(error, now())}
         report = f"⚠️ 등록 실패: {error}"
     _remember(path, request_id, record)
     saved = _save(store, request_id, record, notify, warn=True)
@@ -112,7 +101,7 @@ def _retry_save(store: DataStore, request_id: str, record: dict, notify: Callabl
                 now: Callable[[], datetime], path: Path) -> None:
     """A request processed here but still pending in the queue: only try to store its result again."""
     if record.get("status") == STARTED:
-        record = {"status": queue.STATUS_FAILED, "result": _failed_dict(INTERRUPTED, now())}
+        record = {"status": queue.STATUS_FAILED, "result": failed_dict(INTERRUPTED, now())}
         _remember(path, request_id, record)
     _save(store, request_id, record, notify, warn=False)
 
@@ -133,9 +122,13 @@ def process_queue(store: DataStore, register_fn: Callable[..., DispatchResult] =
     return count
 
 
-def make_relay(store: DataStore, notify: Callable[[str], None]) -> Callable[[], None]:
-    """The zero-argument callable poll_forever runs every RELAY_INTERVAL seconds."""
+def make_relay(store: DataStore, notify: Callable[[str], None], outbox: Path = OUTBOX_FILE) -> Callable[[], None]:
+    """The zero-argument callable poll_forever runs every RELAY_INTERVAL seconds (queue + unsent work log)."""
     def relay() -> None:
         process_queue(store, notify=notify)
+        try:
+            flush_outbox(store, outbox)
+        except Exception as exc:  # noqa: BLE001  # the work log is optional: never stop the bot for it
+            log.error("미전송 작업 기록 처리 실패: %s", type(exc).__name__)
 
     return relay

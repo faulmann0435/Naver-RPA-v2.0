@@ -64,7 +64,8 @@ def test_pending_roundtrip(tmp_path):
     path = tmp_path / "pending.json"
     run = _prepare(tmp_path, [api_item("1")], hanjin_row(1, "111"))
     run_id = add_pending(run, path)
-    assert read_pending(path)[run_id]["matched"] == [{"ids": ["1"], "tracking": "111", "courier": "HANJIN"}]
+    assert read_pending(path)[run_id]["matched"] == [{"ids": ["1"], "tracking": "111", "courier": "HANJIN",
+                                                          "recipient": "홍길동"}]
     remove_pending(run_id, path)
     assert read_pending(path) == {}
 

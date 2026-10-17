@@ -77,8 +77,8 @@ def _write_pending(pending: dict[str, dict], path: Path) -> None:
 
 
 def _groups(assignments: tuple[Assignment, ...]) -> list[dict]:
-    return [{"ids": list(a.product_order_ids), "tracking": a.tracking, "courier": COURIER_CODES[a.carrier]}
-            for a in assignments]
+    return [{"ids": list(a.product_order_ids), "tracking": a.tracking, "courier": COURIER_CODES[a.carrier],
+             "recipient": a.recipient} for a in assignments]
 
 
 def _read_group(group) -> tuple[list[str], str, str]:
@@ -86,6 +86,14 @@ def _read_group(group) -> tuple[list[str], str, str]:
     if isinstance(group, dict):
         return list(group["ids"]), group["tracking"], group["courier"]
     return list(group[:-1]), group[-1], COURIER_CODES["한진택배"]
+
+
+def entry_items(entry: dict, include_checks: bool) -> list[dict]:
+    """The shipments register() would send for this pending entry, shaped like dispatch_queue items."""
+    groups = entry["includable" if include_checks else "matched"]
+    return [{"ids": list(ids), "tracking": tracking, "courier": courier,
+             "recipient": str(group.get("recipient", "")) if isinstance(group, dict) else ""}
+            for group in groups for ids, tracking, courier in [_read_group(group)]]
 
 
 def run_entry(run: InvoiceRun) -> dict:

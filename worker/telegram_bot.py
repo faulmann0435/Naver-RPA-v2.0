@@ -11,6 +11,8 @@ and taps [✅ 카톡 공유 완료], which records the orders so they are not se
 송장: when the owner forwards a tracking file (한진 file or a supplier's list, xlsx/xls), the bot matches it to the unshipped Naver orders,
 sends the filled upload xlsx and a summary with buttons. Tapping [🚚 송장 등록] registers the tracking
 numbers on Naver (worker.dispatch_client; really sent only when INVOICE_DISPATCH_ENABLED=1).
+Each such registration is also written to the shared work log (dispatch/queue.json, shown on the site's
+송장 등록 기록 page) by worker.dispatch_log, after the reply; a failed log write never affects the run.
 """
 from __future__ import annotations
 
@@ -24,11 +26,16 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import requests
 
+from store import dispatch_queue
+from store.base import DataStore
+from worker import single_instance
 from worker.dispatch_client import DispatchResult
+from worker.dispatch_log import OUTBOX_FILE, failed_dict, log_run, result_dict
 from worker.dispatch_relay import RELAY_INTERVAL, load_store, make_relay
 from worker.invoice_run import (
     PENDING_FILE as INVOICE_PENDING_FILE,
@@ -37,14 +44,15 @@ from worker.invoice_run import (
     InvoiceRun,
     add_pending,
     dispatch_report,
+    entry_items,
     invoice_summary,
     prepare_invoices,
     register,
     remove_pending,
 )
 from worker.invoice_run import read_pending as read_invoice_pending
+from worker.naver_adapter import KST
 from worker.naver_client import ENV_FILE, read_env_file
-from worker import single_instance
 from worker.order_run import (
     PENDING_FILE,
     RunResult,
@@ -172,12 +180,14 @@ class OrderBot:
                  pending_file: Path = PENDING_FILE,
                  invoice_preparer: Callable[[bytes], InvoiceRun] = prepare_invoices,
                  invoice_register: Callable[..., DispatchResult] = register,
-                 invoice_pending_file: Path = INVOICE_PENDING_FILE):
+                 invoice_pending_file: Path = INVOICE_PENDING_FILE,
+                 log_store: DataStore | None = None, log_outbox: Path = OUTBOX_FILE):
         self.tg, self.allowed, self.runner, self.mark = tg, allowed, runner, mark
         self.all_runner = all_runner
         self.pending_file = pending_file  # runs awaiting [공유 완료]; a file so a restart keeps them
         self.invoice_preparer, self.invoice_register = invoice_preparer, invoice_register
         self.invoice_pending_file = invoice_pending_file  # 송장 runs awaiting a button tap
+        self.log_store, self.log_outbox = log_store, log_outbox  # shared work log (None: not recorded)
 
     @property
     def pending(self) -> dict[str, dict]:
@@ -302,18 +312,40 @@ class OrderBot:
         if entry is None or choice not in ("m", "a", "x"):
             self.tg.send(chat, "이 버튼은 만료됐습니다. 필요하면 송장 파일을 다시 보내 주세요.")
             return
+        if choice == "x":
+            self.tg.send(chat, "취소했습니다. 등록하지 않았습니다.", reply_markup=run_keyboard())
+            remove_pending(run_id, self.invoice_pending_file)
+            return
+        started = datetime.now(KST)
+        outcome: tuple[str, dict] | None = None
         try:
-            if choice == "x":
-                self.tg.send(chat, "취소했습니다. 등록하지 않았습니다.", reply_markup=run_keyboard())
-                return
             self.tg.send(chat, "⏳ 네이버에 송장을 등록하는 중…")
-            result = self.invoice_register(entry, include_checks=(choice == "a"))
-            self.tg.send(chat, dispatch_report(result), reply_markup=run_keyboard())
-        except Exception as exc:  # report every failure to the owner instead of going silent
-            log.exception("송장 등록 실패")
-            self.tg.send(chat, failure_message(exc, "송장 등록"))
+            try:
+                result = self.invoice_register(entry, include_checks=(choice == "a"))
+            except Exception as exc:  # report every failure to the owner instead of going silent
+                log.exception("송장 등록 실패")
+                error = f"{type(exc).__name__}: {str(exc)[:300]}"
+                outcome = (dispatch_queue.STATUS_FAILED, failed_dict(error, datetime.now(KST)))
+                self.tg.send(chat, failure_message(exc, "송장 등록"))
+            else:
+                outcome = (dispatch_queue.STATUS_DONE, result_dict(result, datetime.now(KST)))
+                self.tg.send(chat, dispatch_report(result), reply_markup=run_keyboard())
+        except Exception:  # a Telegram hiccup after a finished registration must not lose its log entry
+            log.exception("송장 등록 안내 실패")
         finally:
             remove_pending(run_id, self.invoice_pending_file)
+            if outcome is not None:
+                self._log_registration(query, entry, choice, started, *outcome)
+
+    def _log_registration(self, query: dict, entry: dict, choice: str, started: datetime,
+                          status: str, result: dict) -> None:
+        """Write the finished run to the shared work log; whatever goes wrong here stays here."""
+        try:
+            name = str(query.get("from", {}).get("first_name") or "")
+            log_run(self.log_store, uuid.uuid4().hex[:12], entry_items(entry, choice == "a"),
+                    f"텔레그램 {name}" if name else "텔레그램", started, result, status, self.log_outbox)
+        except Exception as exc:  # noqa: BLE001  # optional work: the registration and its reply are done
+            log.error("작업 기록 실패: %s", type(exc).__name__)
 
     def _confirm_run(self, chat: int, query: dict, run_id: str) -> None:
         waiting = self.pending
@@ -396,15 +428,21 @@ def setup_logging(log_dir: Path | None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", handlers=handlers)
 
 
-def _build_relay(settings: BotSettings) -> Callable[[], None] | None:
-    """Relay for the app's 송장 requests, or None without a data_store section (or when it is unusable)."""
+def _load_data_store() -> DataStore | None:
+    """The app's data repository, or None without a data_store section (or when it is unusable)."""
     try:
         store = load_store()
     except Exception as exc:  # a broken secrets file must not keep the bot from starting
         log.error("앱 요청 연결 안 함: 데이터 저장소 설정을 읽지 못했습니다 (%s)", type(exc).__name__)
         return None
     if store is None:
-        log.info("데이터 저장소 설정이 없어 앱의 송장 요청은 받지 않습니다.")
+        log.info("데이터 저장소 설정이 없어 앱의 송장 요청은 받지 않고, 작업 기록도 남기지 않습니다.")
+    return store
+
+
+def _build_relay(settings: BotSettings, store: DataStore | None) -> Callable[[], None] | None:
+    """Relay for the app's 송장 requests, or None without a data store."""
+    if store is None:
         return None
     log.info("앱의 송장 요청을 %d초마다 확인합니다.", RELAY_INTERVAL)
     return make_relay(store, TelegramNotifier(settings).send)
@@ -424,10 +462,11 @@ def main() -> int:
         setup_logging(record_dir / "로그")
         try:
             settings = BotSettings.load()
-            bot = OrderBot(Telegram(settings.token), settings.allowed_chats)
+            store = _load_data_store()
+            bot = OrderBot(Telegram(settings.token), settings.allowed_chats, log_store=store)
             me = bot.tg.call("getMe")
             log.info("봇 @%s 시작 (허용된 대화방 %d개). 끄려면 Ctrl+C", me["username"], len(settings.allowed_chats))
-            poll_forever(bot, relay=_build_relay(settings))
+            poll_forever(bot, relay=_build_relay(settings, store))
         except BaseException as exc:  # under pythonw the log file is the only place a crash shows up
             if not isinstance(exc, KeyboardInterrupt):
                 log.exception("봇이 멈췄습니다 (작업 스케줄러가 1분 뒤 다시 시작)")
