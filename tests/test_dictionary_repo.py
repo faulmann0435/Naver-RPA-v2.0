@@ -103,6 +103,22 @@ def test_append_entries_defaults_and_skip_existing():
     assert row["updated_by"] == "tester" and row["updated_at"].endswith("+09:00")
 
 
+def test_append_entries_reuses_a_disabled_row_instead_of_duplicating():
+    store = MemoryStore()
+    store.write_text(DICTIONARY_FILE, _csv(
+        {"channel": "naver", "enabled": "0", "product_no": "10", "option_key": "옵션: A", "vendor_id": "OLD",
+         "display_template": "옛 문장", "source": "auto_rule", "created_at": "2026-10-01T00:00:00+09:00"},
+        {"channel": "naver", "enabled": "1", "product_no": "1", "vendor_id": "V1", "display_template": "X"},
+    ), None, "seed")
+    result = append_entries(store, [ROW], AUTHOR, DictionarySettings())
+    assert result.added == [("10", "옵션: A")]
+    frame, _ = load_dictionary_frame(store)
+    assert len(frame) == 2
+    row = frame.iloc[0]
+    assert (row["enabled"], row["vendor_id"], row["display_template"]) == ("1", "V1", "A {수량}")
+    assert row["created_at"] == "2026-10-01T00:00:00+09:00"
+
+
 def test_append_entries_creates_missing_file():
     store = MemoryStore()
     result = append_entries(store, [ROW], AUTHOR, DictionarySettings())
