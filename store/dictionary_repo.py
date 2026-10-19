@@ -123,13 +123,25 @@ class AppendResult:
     sha: str
 
 
+def _disabled_positions(frame: pd.DataFrame, settings: DictionarySettings) -> dict[tuple[str, str], int]:
+    """Row position of each key that exists only as a disabled row (first one wins)."""
+    positions: dict[tuple[str, str], int] = {}
+    for position, (_, row) in enumerate(frame.iterrows()):
+        if not _is_enabled(row["enabled"]):
+            positions.setdefault(entry_key(row["product_no"], row["option_key"], settings), position)
+    return positions
+
+
 def _merge_rows(
     frame: pd.DataFrame, rows: list[dict], author: Author, settings: DictionarySettings
 ) -> tuple[pd.DataFrame, list[tuple[str, str]], list[tuple[str, str]]]:
+    """A key held only by a disabled row re-uses that row (keeps one row per key), others are appended."""
     present = _enabled_keys(frame, settings)
+    disabled = {k: p for k, p in _disabled_positions(frame, settings).items() if k not in present}
     now = now_kst_iso()
     added: list[tuple[str, str]] = []
     skipped: list[tuple[str, str]] = []
+    replaced: dict[int, dict[str, str]] = {}
     new_rows: list[dict[str, str]] = []
     for row in rows:
         key = entry_key(row.get("product_no"), row.get("option_key"), settings)
@@ -138,10 +150,16 @@ def _merge_rows(
             continue
         present.add(key)
         added.append(key)
-        new_rows.append(_new_row(row, author, now, settings))
-    if not new_rows:
+        fresh = _new_row(row, author, now, settings)
+        if key in disabled:
+            position = disabled[key]
+            replaced[position] = {**fresh, "created_at": str(frame.iloc[position].get("created_at", "")) or now}
+        else:
+            new_rows.append(fresh)
+    if not added:
         return frame, added, skipped
-    merged = pd.concat([frame, pd.DataFrame(new_rows, columns=DICTIONARY_COLUMNS)], ignore_index=True)
+    kept = [replaced.get(i, r) for i, r in enumerate(frame.reindex(columns=DICTIONARY_COLUMNS).to_dict("records"))]
+    merged = pd.DataFrame([*kept, *new_rows], columns=DICTIONARY_COLUMNS)
     return merged, added, skipped
 
 

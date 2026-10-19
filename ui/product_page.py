@@ -186,6 +186,10 @@ def _detail(base: pd.DataFrame, sha: str | None, ids: list[str], group: str, rel
     name = product_name(rows)
     prefixes = [option_prefix(r["product_no"], r["option_key"]) for r in rows]
     st.markdown(f"### {name}")
+    if len(set(prefixes)) < len(prefixes):
+        doubled = sorted({_option_label(r) for r, p in zip(rows, prefixes, strict=True) if prefixes.count(p) > 1})
+        st.error("이 상품에 같은 옵션이 두 줄씩 저장되어 있어 여기서 고칠 수 없습니다: " + ", ".join(doubled))
+        return
     deleted_before = st.session_state.get(S_DELETED, frozenset())
     for row, prefix in zip(rows, prefixes, strict=True):
         init_state(prefix, values_from_row(row))
