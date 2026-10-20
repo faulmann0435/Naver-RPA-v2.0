@@ -91,10 +91,10 @@ def test_failed_or_simulated_requests_can_be_resubmitted():
     assert q.submit(store, [_item()], "a", NOW) not in (rid, second)
 
 
-def test_trim_keeps_100_and_drops_oldest_finished():
+def test_trim_keeps_max_and_drops_oldest_finished():
     store = MemoryStore()
     ids = []
-    for n in range(104):
+    for n in range(q.MAX_REQUESTS + 4):
         rid = q.submit(store, [_item(str(1000 + n), str(n))], "a", NOW)
         ids.append(rid)
         if n % 2 == 0:

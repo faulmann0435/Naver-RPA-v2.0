@@ -1,9 +1,12 @@
 """Queue of 송장 등록 requests between the app (which cannot call Naver) and the owner's PC.
 
 The app appends a request to dispatch/queue.json in the data repository; the bot on the owner's PC
-processes pending requests and writes the result back. Pure functions over any DataStore.
+processes pending requests and writes the result back. Registrations the owner starts in Telegram are
+appended as already finished entries (record), so the file is the one work log of both ways.
+Pure functions over any DataStore.
 
     {"requests": [{"id", "created_at", "by", "status": "pending"|"done"|"failed",
+                   "source": "app"|"telegram"   (missing in old entries = "app"),
                    "items": [{"ids": [...], "tracking", "courier", "recipient"}],
                    "result": null | {"processed_at", "simulated", "success_ids", "failures", "error"}}]}
 """
@@ -20,8 +23,9 @@ from store.base import Author, ConflictError, DataStore
 
 DISPATCH_QUEUE_PATH = "dispatch/queue.json"
 STATUS_PENDING, STATUS_DONE, STATUS_FAILED = "pending", "done", "failed"
+SOURCE_APP, SOURCE_TELEGRAM = "app", "telegram"
 MAX_SHIPMENTS = 500
-MAX_REQUESTS = 100
+MAX_REQUESTS = 300
 MAX_ATTEMPTS = 3
 TRACKING_PATTERN = re.compile(r"[A-Za-z0-9-]{1,50}")
 AUTHOR_EMAIL = "app@naver-rpa.local"
@@ -100,10 +104,19 @@ def _blocks_resubmit(request: dict) -> bool:
     return request["status"] == STATUS_DONE and not result.get("simulated") and not result.get("failures")
 
 
+def source_of(request: Mapping) -> str:
+    """Where a request came from; entries written before the field existed came from the app."""
+    return str(request.get("source") or SOURCE_APP)
+
+
+def _clean_items(items: Sequence[Mapping]) -> list[dict]:
+    return [{"ids": list(i["ids"]), "tracking": str(i["tracking"]), "courier": i["courier"],
+             "recipient": str(i.get("recipient", ""))} for i in items]
+
+
 def submit(store: DataStore, items: Sequence[Mapping], by: str, now: datetime) -> str:
     """Append a pending request and return its id (the existing id for an exact duplicate)."""
-    clean = [{"ids": list(i["ids"]), "tracking": str(i["tracking"]), "courier": i["courier"],
-              "recipient": str(i.get("recipient", ""))} for i in items]
+    clean = _clean_items(items)
     validate_items(clean)
     wanted = _pairs(clean)
     new_id = uuid.uuid4().hex[:12]
@@ -113,7 +126,7 @@ def submit(store: DataStore, items: Sequence[Mapping], by: str, now: datetime) -
             if _blocks_resubmit(request) and _pairs(request["items"]) == wanted:
                 return str(request["id"])
         requests.append({"id": new_id, "created_at": now.isoformat(timespec="seconds"), "by": by,
-                         "status": STATUS_PENDING, "items": clean, "result": None})
+                         "source": SOURCE_APP, "status": STATUS_PENDING, "items": clean, "result": None})
         return None
 
     return _update(store, add, f"송장 등록 요청 {new_id}", by) or new_id
@@ -122,6 +135,11 @@ def submit(store: DataStore, items: Sequence[Mapping], by: str, now: datetime) -
 def pending(store: DataStore) -> list[dict]:
     """Pending requests, oldest first."""
     return [r for r in _load(store)[0] if r["status"] == STATUS_PENDING]
+
+
+def history(store: DataStore) -> list[dict]:
+    """Every request, newest first (equal times: the later-appended first)."""
+    return sorted(_load(store)[0], key=lambda r: str(r.get("created_at", "")))[::-1]
 
 
 def get(store: DataStore, request_id: str) -> dict | None:
@@ -144,3 +162,21 @@ def complete(store: DataStore, request_id: str, result: Mapping, status: str) ->
 
     if _update(store, apply, f"송장 등록 결과 {request_id}", "PC 봇") == "missing":
         raise KeyError(f"요청을 찾을 수 없습니다: {request_id}")
+
+
+def record(store: DataStore, request_id: str, items: Sequence[Mapping], by: str, created_at: datetime,
+           result: Mapping, status: str, source: str = SOURCE_TELEGRAM) -> None:
+    """Append a request that is already finished (done or failed); a no-op if the id is already there."""
+    if status not in (STATUS_DONE, STATUS_FAILED):
+        raise ValueError(f"잘못된 상태입니다: {status}")
+    entry = {"id": request_id, "created_at": created_at.isoformat(timespec="seconds"), "by": by,
+             "source": source, "status": status, "items": _clean_items(items), "result": dict(result)}
+
+    def add(requests: list[dict]) -> str | None:
+        if any(r["id"] == request_id for r in requests):
+            return "exists"  # a retry after a partly successful save must not duplicate
+        requests.append(entry)
+        return None
+
+    label = "텔레그램" if source == SOURCE_TELEGRAM else "사이트"
+    _update(store, add, f"송장 등록 기록 {request_id} ({label})", by)
