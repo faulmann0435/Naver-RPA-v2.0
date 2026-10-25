@@ -10,7 +10,7 @@ PC에 로그인하면 텔레그램 발주봇이 저절로 켜지고, 꺼지면 1
 3. 텔레그램에서 봇에게 [시작] -> 봇이 알려 준 대화방 번호를 `대화방추가.bat`(`ops\add_chat_id.ps1`)에 입력.
 
 값의 출처: 애플리케이션 ID·시크릿은 커머스API센터, 봇 토큰은 @BotFather, GitHub 토큰만 개발자.
-봇에는 `requirements-bot.txt`(streamlit/anthropic 제외)만 설치합니다.
+봇에는 `requirements-bot.txt`(streamlit 제외)만 설치합니다.
 `ops\_common.ps1`은 공용 함수(.env 읽기/쓰기, 파이썬 찾기), `ops\check_naver.py`는 네이버 토큰 시험입니다.
 
 ## 고객 문의(CS) 기능
