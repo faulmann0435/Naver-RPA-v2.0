@@ -2,7 +2,7 @@
 
     python -m worker.cs_watch [--once] [--every 10] [--days 2] [--dry-run]
 
-Every cycle: new unanswered product Q&A and 1:1 inquiries are linked to their orders, an AI draft
+Every cycle: unanswered product Q&A and 1:1 inquiries are linked to their orders, an AI draft
 is written from the store document, and one Telegram message per question goes to the allowed
 chats. Nothing is ever posted to Naver. When a question we alerted on is later answered by the
 owner, the pair (AI draft, owner answer) is appended to pairs.jsonl for later scoring.
@@ -44,6 +44,7 @@ from worker.cs_drafter import (
     model_name,
 )
 from worker.cs_drafter import draft as make_draft
+from worker.cs_hours import is_work_time, load_schedule
 from worker.cs_outcomes import (
     AI_AS_IS,
     ANSWERED_ELSEWHERE,
@@ -84,7 +85,7 @@ from worker.telegram_bot import BotSettings, Telegram
 
 CS_DIR_NAME, STATE_DIR_NAME = "CS자료", "알림기록"
 STATE_DIR_KEY = "CS_STATE_DIR"
-BASELINE_AGE = timedelta(hours=6)  # first run: older unanswered questions are recorded, not alerted
+BOT_FETCH_DAYS = 7  # the PC may be off over a weekend: look a week back so no question is missed
 REASON_MAX = 60
 PAIR_WINDOW_DAYS = 30  # stop waiting for an owner answer after this many days
 
@@ -106,7 +107,6 @@ class Options:
 @dataclass(frozen=True)
 class CycleStats:
     alerted: int = 0
-    skipped: int = 0
     paired: int = 0
     failed: int = 0
 
@@ -258,12 +258,11 @@ def _fetch_order_details(token: str, pending: list[Item], now: datetime) -> list
     return details
 
 
-def _baseline(state: dict[str, dict], pending: list[Item],
-              now: datetime) -> tuple[dict[str, dict], list[Item], list[Item]]:
-    """First run: unanswered questions older than 6 hours are recorded as seen without an alert."""
-    old = [i for i in pending if now - i.created > BASELINE_AGE]
-    state = {**state, **{i.key: _entry(i, now) for i in old}}
-    return state, old, [i for i in pending if i not in old]
+def _needs_alert(entry: dict | None) -> bool:
+    """Never seen, or recorded without an alert by the old first-run baseline (no outcome, not done)."""
+    if entry is None:
+        return True
+    return not entry.get("alerted") and not entry.get("outcome") and not entry.get("done")
 
 
 def fetch_start(state: dict[str, dict], end: date, days: int) -> date:
@@ -290,32 +289,27 @@ def run_cycle(opts: Options, client: Any, doc: str, model: str, now: datetime | 
     """One check. `target` = (Telegram, chats) from the bot; without it the .env bot settings are used."""
     now = now or datetime.now(KST)
     state, first_run = load_state(opts.state_dir)
+    if first_run and not opts.dry_run:
+        save_state(opts.state_dir, state)  # the state file exists from the first cycle on
     token = fetch_token(load_credentials())
     end = now.date()
     start = fetch_start(state, end, opts.days)
     items = collect_items(fetch_qnas(token, start, end), fetch_customer_inquiries(token, start, end))
     answered = [i for i in items if i.answered and i.key in state and not state[i.key].get("done")]
-    pending = [i for i in items if not i.answered and i.key not in state]
+    pending = [i for i in items if not i.answered and _needs_alert(state.get(i.key))]
 
     paired = 0
     if answered and not opts.dry_run:
         state, paired = record_pairs(opts.state_dir, state, answered, now, store)
-    skipped: list[Item] = []
-    if first_run:
-        state, skipped, pending = _baseline(state, pending, now)
-        for item in skipped:
-            print(f"처음 실행: 오래된 미답변 문의는 알림 없이 기록만 합니다 {_describe(item.channel, item.created)}")
-        if not opts.dry_run:
-            save_state(opts.state_dir, state)
     if not pending:
-        return CycleStats(skipped=len(skipped), paired=paired)
+        return CycleStats(paired=paired)
 
     tg, chats = target or _telegram_target(opts)
     details = _fetch_order_details(token, pending, now)
     alerted = failed = 0
     for item in pending:
         link = link_item(item, details)
-        view = InquiryView(item.channel, item.created, item.product_name, item.question, link)
+        view = InquiryView(item.channel, item.created, item.product_name, item.question, link, answer_at=now)
         result, note = _ai_draft(client, doc, model, view, ai_off_note)
         text = format_alert(view, link, result, note)
         if opts.dry_run:
@@ -330,14 +324,20 @@ def run_cycle(opts: Options, client: Any, doc: str, model: str, now: datetime | 
             alerted += 1
         else:
             failed += 1
-    return CycleStats(alerted, len(skipped), paired, failed)
+    return CycleStats(alerted, paired, failed)
 
 
 # --- inside the Telegram bot ------------------------------------------------------------------
 
+def _now() -> datetime:
+    return datetime.now(KST)
+
+
 def make_bot_job(tg: Any, chats: frozenset[int], store: DataStore | None,
                  state_dir: Path | None = None) -> Callable[[], None]:
-    """The zero-argument callable the bot runs every CS_INTERVAL seconds: one cycle with buttons."""
+    """The zero-argument callable the bot runs every CS_INTERVAL seconds: one cycle with buttons.
+    Outside business hours (see worker.cs_hours) it does nothing; the first cycle inside them alerts
+    everything that piled up."""
     directory = state_dir or default_state_dir()
 
     def ai_client() -> tuple[Any, str]:
@@ -351,6 +351,12 @@ def make_bot_job(tg: Any, chats: frozenset[int], store: DataStore | None,
             return None, f"(AI 초안 꺼짐: {trim(reason, REASON_MAX)})"
 
     def job() -> None:
+        now = _now()
+        schedule, warnings = load_schedule()
+        for warning in warnings:
+            log.warning(warning)
+        if not is_work_time(now, schedule):
+            return
         client, note = ai_client()
         active, doc = client, ""
         if client is not None:  # re-read each cycle so store-document edits apply without a restart
@@ -359,7 +365,7 @@ def make_bot_job(tg: Any, chats: frozenset[int], store: DataStore | None,
             except DraftError as err:
                 log.error("가게 정보 문서를 읽지 못해 AI 없이 알립니다: %s", err)
                 active, note = None, f"(AI 초안 꺼짐: {trim(str(err), REASON_MAX)})"
-        stats = run_cycle(Options(directory, buttons=True), active, doc, model_name(),
+        stats = run_cycle(Options(directory, BOT_FETCH_DAYS, buttons=True), active, doc, model_name(), now=now,
                           target=(tg, chats), store=store, ai_off_note=note)
         if store is not None:
             flush_outbox(directory, store)
@@ -372,7 +378,7 @@ def make_bot_job(tg: Any, chats: frozenset[int], store: DataStore | None,
 # --- CLI --------------------------------------------------------------------------------------
 
 def _summary(stats: CycleStats) -> str:
-    return (f"알림 {stats.alerted}건, 기록만 {stats.skipped}건, "
+    return (f"알림 {stats.alerted}건, "
             f"답변 쌍 {stats.paired}건, 전송 실패 {stats.failed}건")
 
 

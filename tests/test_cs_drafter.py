@@ -60,8 +60,25 @@ def test_system_has_rules_then_cached_document():
 
 def test_rules_cover_the_required_points():
     rules = build_messages(DOC, view())["system"][0]["text"]
-    for phrase in ("요일", "정확", "§6", "§4", "주소 변경", "§5", "추가 구매", "주문번호", "링크"):
+    for phrase in ("답변 작성 시각", "정확", "§6", "§4", "주소 변경", "§5", "추가 구매", "주문번호", "링크"):
         assert phrase in rules
+
+
+def test_answer_time_line_follows_the_question_time():
+    answered = InquiryView("상품문의", ASKED, "장어", "q", view().link, answer_at=datetime(2026, 10, 12, 9, 0, tzinfo=KST))
+    lines = build_messages(DOC, answered)["messages"][0]["content"].splitlines()
+    assert lines[1].startswith("문의 시각: 2026-10-10(토)") and lines[2] == "답변 작성 시각: 2026-10-12(월) 09:00"
+
+
+def test_view_without_answer_time_has_no_such_line():
+    user = build_messages(DOC, view())["messages"][0]["content"]
+    assert view().answer_at is None and "답변 작성 시각" not in user
+
+
+def test_rule_two_is_about_the_answer_time():
+    rules = build_messages(DOC, view())["system"][0]["text"]
+    assert "2. 문의 시각과 답변 작성 시각이 주어집니다." in rules and "답변 작성 시각을 기준으로" in rules
+    assert "(규칙 3)" in rules and "\n3. 주문 연결이" in rules
 
 
 def test_user_message_has_channel_time_product_question_and_order_text():

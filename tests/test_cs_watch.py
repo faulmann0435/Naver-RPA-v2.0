@@ -1,4 +1,4 @@
-"""CS watcher cycles: baseline, alert once, state after each send, pairs, dry-run — no network (fakes)."""
+"""CS watcher cycles: alert once, state after each send, pairs, dry-run — no network (fakes)."""
 import json
 import logging
 from datetime import datetime, timedelta
@@ -93,19 +93,60 @@ def state_of(opts):
 
 # --- first run / alert once ---------------------------------------------------------------------
 
-def test_first_run_records_old_questions_silently_and_alerts_new_ones(world, opts, capsys):
+def test_first_run_alerts_old_unanswered_questions_too(world, opts):
     world.qnas = [question("old", hours_ago=10), question("new", hours_ago=1)]
     stats = cycle(opts)
-    assert (stats.alerted, stats.skipped) == (1, 1)
-    assert len(texts()) == 1 and FakeTelegram.sent[0][1]["disable_web_page_preview"] is True
+    assert stats.alerted == 2 and len(texts()) == 2 and FakeTelegram.sent[0][1]["disable_web_page_preview"] is True
     state = state_of(opts)
-    assert state["qna:old"]["alerted"] is False and state["qna:new"]["alerted"] is True
-    assert "알림 없이 기록만" in capsys.readouterr().out
+    assert state["qna:old"]["alerted"] is True and state["qna:new"]["alerted"] is True
 
 
-def test_first_run_with_only_old_questions_still_creates_state_file(world, opts):
+def test_first_run_creates_state_file(world, opts):
     world.qnas = [question("old", hours_ago=30)]
-    assert cycle(opts).alerted == 0 and (opts.state_dir / "notified.json").exists()
+    assert cycle(opts).alerted == 1 and (opts.state_dir / "notified.json").exists()
+
+
+def baselined(options, key="qna:old", **fields):
+    """A state entry as the old first-run baseline wrote it (recorded, never alerted)."""
+    entry = {"sid": "x", "channel": "상품문의", "id": "old", "created": iso(10), "product_name": "", "question": "q",
+             "draft": None, "notified_at": iso(10), "alerted": False, "order_kind": "", "messages": {},
+             "done": False, **fields}
+    cs_watch.save_state(options.state_dir, {key: entry})
+
+
+def test_old_baselined_entry_is_alerted_once_and_never_again(world, opts):
+    baselined(opts)
+    world.qnas = [question("old", hours_ago=10)]
+    assert cycle(opts).alerted == 1 and len(texts()) == 1
+    assert state_of(opts)["qna:old"]["alerted"] is True
+    assert cycle(opts).alerted == 0 and len(texts()) == 1
+
+
+def test_baselined_entry_with_outcome_or_done_is_not_alerted(world, opts):
+    baselined(opts, outcome="seller_center")
+    world.qnas = [question("old", hours_ago=10)]
+    assert cycle(opts).alerted == 0
+    baselined(opts, done=True)
+    assert cycle(opts).alerted == 0 and texts() == []
+
+
+def test_alerted_entry_is_never_re_alerted(world, opts):
+    baselined(opts, alerted=True)
+    world.qnas = [question("old", hours_ago=10)]
+    assert cycle(opts).alerted == 0 and texts() == []
+
+
+def test_baselined_entry_answered_meanwhile_is_just_done(world, opts):
+    baselined(opts)
+    world.qnas = [question("old", hours_ago=10, answered=True, answer="a")]
+    assert cycle(opts).alerted == 0 and state_of(opts)["qna:old"]["done"] is True and pairs(opts) == []
+
+
+def test_draft_gets_the_cycle_time_as_answer_time(world, opts):
+    world.qnas = [question("a", hours_ago=40)]
+    client = FakeClient(reply())
+    cycle(opts, client=client)
+    assert "답변 작성 시각: 2026-10-10(토) 12:00" in client.calls[0]["messages"][0]["content"]
 
 
 def test_new_question_is_alerted_only_once(world, opts):
@@ -263,7 +304,7 @@ def test_dry_run_prints_alerts_and_writes_nothing(world, tmp_path, capsys, monke
     world.qnas = [question("old", hours_ago=10), question("a")]
     stats = cycle(dry, client=FakeClient(reply()))
     out = capsys.readouterr().out
-    assert stats.alerted == 1 and "🟡 상품문의" in out and "안녕하세요 고객님^^" in out
+    assert stats.alerted == 2 and "🟡 상품문의" in out and "안녕하세요 고객님^^" in out
     assert not (tmp_path / "dry").exists() and FakeTelegram.sent == []
 
 

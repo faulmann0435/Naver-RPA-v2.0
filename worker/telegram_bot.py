@@ -489,9 +489,14 @@ def _build_cs(settings: BotSettings, tg: Telegram,
     from worker import (
         cs_watch,  # here, not at the top: cs_watch itself imports this module
     )
+    from worker.cs_hours import load_schedule
 
     state_dir = cs_watch.default_state_dir()
-    log.info("고객 문의(CS) 기능: 켜짐 (%d분마다 확인, 상태 폴더 %s)", CS_INTERVAL // 60, state_dir)
+    schedule, warnings = load_schedule()
+    for warning in warnings:
+        log.warning(warning)
+    log.info("고객 문의(CS) 기능: 켜짐 (%d분마다 확인, 알림 시간 %s, 상태 폴더 %s)",
+             CS_INTERVAL // 60, schedule.describe(), state_dir)
     return CsFlow(tg, state_dir, store), cs_watch.make_bot_job(tg, settings.allowed_chats, store, state_dir)
 
 

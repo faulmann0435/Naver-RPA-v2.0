@@ -1,6 +1,7 @@
 """CS watcher inside the bot: buttons, state entry, outcomes (answered elsewhere), the bot job."""
 import json
 import logging
+from datetime import datetime
 
 import pytest
 
@@ -18,11 +19,12 @@ from tests.test_cs_watch import (  # noqa: F401  (world and opts are pytest fixt
     texts,
     world,
 )
-from worker import cs_watch
+from worker import cs_hours, cs_watch
 from worker.cs_alert import NO_AI_NOTE
 from worker.cs_drafter import DraftError
 from worker.cs_state import short_id
 from worker.cs_watch import Options, run_cycle
+from worker.naver_adapter import KST
 
 
 def outcomes_of(options):
@@ -92,9 +94,8 @@ def test_answered_in_seller_center_without_choice_is_answered_elsewhere(world, o
     assert len(outcomes_of(opts)) == 1
 
 
-def test_baseline_questions_get_no_outcome(world, opts):
-    world.qnas = [question("old", hours_ago=10)]
-    cycle(opts)
+def test_old_baselined_questions_get_no_outcome(world, opts):
+    cs_watch.save_state(opts.state_dir, {"qna:old": {"sid": "x", "alerted": False, "done": False}})
     world.qnas = [question("old", hours_ago=10, answered=True, answer="a")]
     cycle(opts)
     assert outcomes_of(opts) == []
@@ -127,6 +128,18 @@ def test_seller_center_choice_then_owner_answer_makes_a_pair_only(world, opts):
 
 
 # --- make_bot_job ----------------------------------------------------------------------------------
+
+TUESDAY_10 = datetime(2026, 10, 13, 10, 0, tzinfo=KST)
+
+
+@pytest.fixture(autouse=True)
+def work_time(monkeypatch):
+    """The bot job runs on a Tuesday at 10:00 with the default hours unless a test says otherwise."""
+    monkeypatch.setattr(cs_watch, "_now", lambda: TUESDAY_10)
+    monkeypatch.setattr(cs_hours, "read_env_file", lambda path: {})
+    for key in (cs_hours.HOURS_KEY, cs_hours.DAYS_KEY):
+        monkeypatch.delenv(key, raising=False)
+
 
 @pytest.fixture
 def job_env(monkeypatch):
@@ -212,3 +225,55 @@ def test_bot_job_picks_up_a_key_added_later(job_env, tmp_path, monkeypatch):
     job()
     job()
     assert [seen[1] for seen in job_env] == [None, "client"]
+
+
+def test_bot_job_looks_a_week_back_and_passes_the_time(job_env, tmp_path):
+    cs_watch.make_bot_job(object(), CHATS, None, tmp_path)()
+    ((options, _, _, kw),) = job_env
+    assert options.days == cs_watch.BOT_FETCH_DAYS == 7 and kw["now"] == TUESDAY_10
+
+
+@pytest.mark.parametrize("moment", [
+    datetime(2026, 10, 13, 8, 59, tzinfo=KST), datetime(2026, 10, 13, 18, 0, tzinfo=KST),
+    datetime(2026, 10, 17, 11, 0, tzinfo=KST),  # Saturday
+])
+def test_bot_job_does_nothing_outside_business_hours(job_env, tmp_path, monkeypatch, moment):
+    monkeypatch.setattr(cs_watch, "_now", lambda: moment)
+    monkeypatch.setattr(cs_watch, "make_client", lambda: pytest.fail("no AI call outside hours"))
+    flushed = []
+    monkeypatch.setattr(cs_watch, "flush_outbox", lambda d, s: flushed.append(d))
+    cs_watch.make_bot_job(object(), CHATS, MemoryStore(), tmp_path)()
+    assert job_env == [] and flushed == []
+
+
+def test_bot_job_runs_at_opening_time(job_env, tmp_path, monkeypatch):
+    monkeypatch.setattr(cs_watch, "_now", lambda: datetime(2026, 10, 13, 9, 0, tzinfo=KST))
+    cs_watch.make_bot_job(object(), CHATS, None, tmp_path)()
+    assert len(job_env) == 1
+
+
+def test_bot_job_follows_env_settings_and_warns_on_bad_ones(job_env, tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv(cs_hours.HOURS_KEY, "10:30-11:00")  # 10:00 is before the custom start
+    cs_watch.make_bot_job(object(), CHATS, None, tmp_path)()
+    assert job_env == []
+    monkeypatch.setenv(cs_hours.HOURS_KEY, "abc")
+    with caplog.at_level(logging.WARNING, logger="cs_watch"):
+        cs_watch.make_bot_job(object(), CHATS, None, tmp_path)()
+    assert len(job_env) == 1 and cs_hours.HOURS_KEY in caplog.text
+
+
+def test_pile_up_is_alerted_at_the_first_cycle_in_hours(world, tmp_path, monkeypatch):
+    """Closed -> nothing; the next in-hours cycle alerts the Saturday question, draft dated then."""
+    client = FakeClient(reply())
+    monkeypatch.setattr(cs_watch, "make_client", lambda: client)
+    monkeypatch.setattr(cs_watch, "load_store_doc", lambda store=None: "문서")
+    world.qnas = [question("sat", hours_ago=50)]
+    job = cs_watch.make_bot_job(FakeTelegram("t"), CHATS, None, tmp_path)
+    for closed in (datetime(2026, 10, 10, 20, 0, tzinfo=KST), NOW):  # Saturday evening, Saturday noon
+        monkeypatch.setattr(cs_watch, "_now", lambda moment=closed: moment)
+        job()
+    assert FakeTelegram.sent == [] and client.calls == []
+    monkeypatch.setattr(cs_watch, "_now", lambda: datetime(2026, 10, 12, 9, 0, tzinfo=KST))
+    job()
+    assert len(FakeTelegram.sent) == 1
+    assert "답변 작성 시각: 2026-10-12(월) 09:00" in client.calls[0]["messages"][0]["content"]

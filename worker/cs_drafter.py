@@ -44,7 +44,7 @@ RULES = """당신은 수산물 스마트스토어 '최고다농수산'의 고객
 초안은 사장님만 보고, 사장님이 고쳐서 직접 답합니다. 아래 규칙을 반드시 지킵니다.
 
 1. 근거는 아래 [가게 정보 문서]와 주문 정보뿐입니다. 문서에 없는 내용은 지어내지 마세요.
-2. 날짜 계산은 문의 시각(요일 포함)을 기준으로 합니다.
+2. 문의 시각과 답변 작성 시각이 주어집니다. 고객은 답변 작성 시각에 답을 읽습니다. '오늘·내일·이번 주' 같은 표현과 출고·도착 날짜는 답변 작성 시각을 기준으로 쓰고, 이미 지난 시각·날짜를 앞으로 일어날 일처럼 쓰지 마세요. 주문이 이미 있다면 출고일 계산은 실제 결제 시각 기준입니다(규칙 3).
 3. 주문 연결이 "정확"이면 결제 시각·주문 상태를 근거로 답해도 됩니다.
    "추정", "후보 여러 건", "없음"이면 출고일·도착일을 단정하지 마세요.
 4. 문서 §6 '오늘의 상황' 칸에 없는 그날의 상황(조업·재고·입고·지연 등)은 확답하지 말고 route를 "사람에게"로 하세요.
@@ -95,6 +95,7 @@ class InquiryView:
     product_name: str
     question: str
     link: LinkResult
+    answer_at: datetime | None = None  # when the answer is written (the customer reads it then)
 
 
 def _setting(key: str) -> str:
@@ -149,9 +150,11 @@ def build_messages(doc: str, view: InquiryView) -> dict[str, Any]:
         {"type": "text", "text": RULES},
         {"type": "text", "text": f"[가게 정보 문서]\n{doc}", "cache_control": {"type": "ephemeral"}},
     ]
+    answer_line = [f"답변 작성 시각: {stamp_with_weekday(view.answer_at)}"] if view.answer_at else []
     user = "\n".join([
         f"채널: {view.channel}",
         f"문의 시각: {stamp_with_weekday(view.created)}",
+        *answer_line,
         f"상품: {view.product_name or '(알 수 없음)'}",
         f"문의 내용: {mask_question(view.question)}",
         "",

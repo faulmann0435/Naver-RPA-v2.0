@@ -126,6 +126,7 @@ def test_build_cs_on_returns_flow_and_job_and_logs_it(monkeypatch, tmp_path, cap
     with caplog.at_level("INFO", logger="telegram_bot"):
         flow, job = telegram_bot._build_cs(settings, object(), None)
     assert isinstance(flow, CsFlow) and callable(job) and "고객 문의(CS) 기능: 켜짐" in caplog.text
+    assert "알림 시간 월화수목금 09:00-18:00" in caplog.text
 
 
 # --- store document order -----------------------------------------------------------------------
