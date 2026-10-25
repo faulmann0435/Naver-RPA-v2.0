@@ -8,6 +8,9 @@ from __future__ import annotations
 from worker.cs_drafter import ROUTE_AI, DraftResult, InquiryView, stamp_with_weekday
 from worker.order_link import KIND_GUESS, KIND_MANY, LinkResult, OrderSummary
 
+CS_PREFIX = "cs:"  # callback data: cs:<action>:<sid>[:<fingerprint>]
+ACT_AI, ACT_WRITE, ACT_SELLER = "ai", "wr", "sc"  # buttons under an alert
+ACT_POST, ACT_REWRITE, ACT_CANCEL = "go", "rw", "no"  # buttons under a preview
 TELEGRAM_LIMIT = 4096
 SAFE_LIMIT = 4000  # leave room below Telegram's hard limit
 PRODUCT_MAX, QUESTION_MAX, OPTION_MAX, REASON_MAX = 30, 300, 20, 100
@@ -64,3 +67,22 @@ def format_alert(view: InquiryView, link_result: LinkResult, draft: DraftResult 
     top = f"{head}\n{_class_line(draft)}\n✍️ AI 초안:\n"
     body = trim(draft.draft, SAFE_LIMIT - len(top)) if draft.draft else NO_DRAFT
     return top + body
+
+
+def _button(text: str, action: str, sid: str, extra: str = "") -> dict:
+    return {"text": text, "callback_data": f"{CS_PREFIX}{action}:{sid}" + (f":{extra}" if extra else "")}
+
+
+def alert_keyboard(sid: str, draft: DraftResult | None) -> dict:
+    """Inline buttons of an alert: [✅ 이대로 올리기] only when there is a draft text to post."""
+    row = [_button("✍️ 직접 쓰기", ACT_WRITE, sid), _button("🙋 판매자센터에서 할게요", ACT_SELLER, sid)]
+    if draft is not None and draft.draft.strip():
+        row.insert(0, _button("✅ 이대로 올리기", ACT_AI, sid))
+    return {"inline_keyboard": [[b] for b in row]}
+
+
+def preview_keyboard(sid: str, fingerprint: str, *, rewrite: bool) -> dict:
+    """Buttons under "이 답변을 올릴까요?": [올리기] plus [다시 쓰기] for the owner's own text, and [취소]."""
+    second = [_button("✍️ 다시 쓰기", ACT_REWRITE, sid)] if rewrite else []
+    row = [_button("올리기", ACT_POST, sid, fingerprint), *second, _button("취소", ACT_CANCEL, sid)]
+    return {"inline_keyboard": [row]}

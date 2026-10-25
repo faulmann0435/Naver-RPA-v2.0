@@ -10,7 +10,7 @@ $dataDir = 'C:\choigoda-data'
 $dataRepo = 'faulmann0435/Naver-RPA-data'
 $dataBranch = 'dev'
 # Shown on the first screen so a stale copy (old ZIP not overwritten) is easy to spot. Bump on every change.
-$SetupEdition = '2026-10-20'
+$SetupEdition = '2026-10-25'
 $env:PYTHONUTF8 = '1'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
@@ -38,6 +38,15 @@ function Ask-Value([string]$Label, [string]$Existing, [scriptblock]$Check, [stri
         if ($value -and (& $Check $value)) { return $value }
         Show-Warn $Hint
     }
+}
+
+function Ask-OptionalSecret([string]$Label, [string]$Existing) {
+    # Masked input (nothing shows while typing). Enter skips; returns '' then.
+    if ($Existing) { $Label = "$Label (이미 있음, Enter = 그대로)" }
+    $secure = Read-Host $Label -AsSecureString
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try { return (Clean-Value ([System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr))) }
+    finally { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
 }
 
 Write-Host '=== 발주봇 설치 ===' -ForegroundColor Cyan
@@ -104,20 +113,33 @@ $clientSecret = Ask-Value '2) 시크릿  [커머스API센터에서 복사]' $env
 $botToken = Ask-Value '3) 텔레그램 봇 토큰  [BotFather가 알려 준 123456789:AA... 값]' $envMap['TELEGRAM_BOT_TOKEN'] { param($v) $v -match '^\d+:[\w-]+$' } '봇 토큰은 123456789:AAxxxx 모양입니다. 다시 붙여넣어 주세요.'
 $ghToken = Ask-Value '4) GitHub 데이터 열람 토큰  [개발자에게 받은 github_pat_... 값]' $oldToken $notEmpty '값이 비어 있습니다. 다시 붙여넣어 주세요.'
 
+Write-Host ''
+Write-Host '[선택] 고객 문의 AI 답변 초안' -ForegroundColor Cyan
+Write-Host '  Anthropic API 키를 넣으면 새 고객 문의마다 텔레그램으로 AI 초안과 버튼이 옵니다. 없으면 Enter로 건너뜁니다.'
+Write-Host '  (답변을 네이버에 실제로 올리는 기능은 개발자가 확인한 뒤 따로 켭니다. 지금은 시험 모드입니다)'
+$aiKey = Ask-OptionalSecret '5) Anthropic API 키  [sk-ant-... 값, 건너뛰려면 Enter]' $envMap['ANTHROPIC_API_KEY']
+
 $chatIds = if ($envMap.Contains('TELEGRAM_ALLOWED_CHAT_IDS')) { $envMap['TELEGRAM_ALLOWED_CHAT_IDS'] } else { '' }
-Update-EnvFile $envFile ([ordered]@{
+$envUpdates = [ordered]@{
     NAVER_COMMERCE_CLIENT_ID     = $clientId
     NAVER_COMMERCE_CLIENT_SECRET = $clientSecret
     TELEGRAM_BOT_TOKEN           = $botToken
     TELEGRAM_ALLOWED_CHAT_IDS    = $chatIds
     RPA_DATA_DIR                 = $dataDir
-})
+}
+if ($aiKey) {
+    # CS_ANSWER_ENABLED is deliberately NOT set: answers stay in test mode until the first live post is verified.
+    $envUpdates['ANTHROPIC_API_KEY'] = $aiKey
+    $envUpdates['CS_WATCH_ENABLED'] = '1'
+}
+Update-EnvFile $envFile $envUpdates
 $tomlToken = $ghToken.Replace('\', '\\')
 $toml = "[data_store]`r`nrepo = `"$dataRepo`"`r`nbranch = `"$dataBranch`"`r`ntoken = `"$tomlToken`"`r`n"
 Write-Utf8NoBom $secretsFile $toml
 if (-not (Test-Path -LiteralPath $dataDir)) { New-Item -ItemType Directory -Path $dataDir -Force | Out-Null }
 Show-Ok '설정을 저장했습니다 (.env, .streamlit\secrets.toml)'
 Show-Ok "데이터 폴더: $dataDir"
+if ($aiKey) { Show-Ok '고객 문의 알림을 켰습니다 (답변 올리기는 시험 모드)' }
 
 # ---- 5. Naver + Telegram --------------------------------------------------------------
 Show-Step 5 '네이버·텔레그램 연결 확인'

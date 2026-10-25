@@ -13,6 +13,10 @@ sends the filled upload xlsx and a summary with buttons. Tapping [🚚 송장 �
 numbers on Naver (worker.dispatch_client; really sent only when INVOICE_DISPATCH_ENABLED=1).
 Each such registration is also written to the shared work log (dispatch/queue.json, shown on the site's
 송장 등록 기록 page) by worker.dispatch_log, after the reply; a failed log write never affects the run.
+
+고객 문의 (CS): with CS_WATCH_ENABLED=1 the bot also checks for new unanswered customer questions every
+CS_INTERVAL seconds (worker.cs_watch) and handles the buttons / typed answers under each alert
+(worker.cs_flow), in this same process so only one getUpdates poller uses the token.
 """
 from __future__ import annotations
 
@@ -34,6 +38,9 @@ import requests
 from store import dispatch_queue
 from store.base import DataStore
 from worker import single_instance
+from worker.cs_alert import CS_PREFIX
+from worker.cs_flow import STATS_BUTTON, STATS_COMMAND, CsFlow
+from worker.cs_state import cs_enabled
 from worker.dispatch_client import DispatchResult
 from worker.dispatch_log import OUTBOX_FILE, failed_dict, log_run, result_dict
 from worker.dispatch_relay import RELAY_INTERVAL, load_store, make_relay
@@ -77,6 +84,7 @@ POLL_TIMEOUT = 30
 HTTP_TIMEOUT = POLL_TIMEOUT + 10
 TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
 CHATS_KEY = "TELEGRAM_ALLOWED_CHAT_IDS"
+CS_INTERVAL = 600  # seconds between two looks for new customer questions
 BACKOFF_START, BACKOFF_MAX = 5, 60  # seconds to wait after a failed getUpdates, doubling up to the max
 LOCK_NAME = "telegram_bot"
 LOG_FILE_NAME = "telegram_bot.log"
@@ -163,8 +171,9 @@ def failure_message(exc: Exception, what: str = "발주 처리") -> str:
 
 
 def run_keyboard() -> dict:
-    return {"keyboard": [[{"text": RUN_BUTTON}, {"text": ALL_BUTTON}]], "resize_keyboard": True,
-            "is_persistent": True}
+    row = [{"text": RUN_BUTTON}, {"text": ALL_BUTTON}]
+    rows = [row, [{"text": STATS_BUTTON}]] if cs_enabled() else [row]
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
 
 def pending_token(pending: dict[str, dict]) -> str:
@@ -181,13 +190,15 @@ class OrderBot:
                  invoice_preparer: Callable[[bytes], InvoiceRun] = prepare_invoices,
                  invoice_register: Callable[..., DispatchResult] = register,
                  invoice_pending_file: Path = INVOICE_PENDING_FILE,
-                 log_store: DataStore | None = None, log_outbox: Path = OUTBOX_FILE):
+                 log_store: DataStore | None = None, log_outbox: Path = OUTBOX_FILE,
+                 cs: CsFlow | None = None):
         self.tg, self.allowed, self.runner, self.mark = tg, allowed, runner, mark
         self.all_runner = all_runner
         self.pending_file = pending_file  # runs awaiting [공유 완료]; a file so a restart keeps them
         self.invoice_preparer, self.invoice_register = invoice_preparer, invoice_register
         self.invoice_pending_file = invoice_pending_file  # 송장 runs awaiting a button tap
         self.log_store, self.log_outbox = log_store, log_outbox  # shared work log (None: not recorded)
+        self.cs = cs  # customer-question buttons and typed answers (None: CS is off)
 
     @property
     def pending(self) -> dict[str, dict]:
@@ -217,6 +228,10 @@ class OrderBot:
                 self._run(chat)
         elif message.get("text") == ALL_BUTTON:
             self._run(chat, self.all_runner)  # deliberately ignores the ledger, so no pending question
+        elif self.cs is not None and message.get("text") in (STATS_BUTTON, STATS_COMMAND):
+            self.tg.send(chat, self.cs.stats_text(), reply_markup=run_keyboard())
+        elif self.cs is not None and self.cs.handles_text(chat, message):
+            self.cs.on_text(chat, message)
         else:
             self.tg.send(chat, f"아래 [{RUN_BUTTON}] 버튼을 누르면 새 주문으로 발주서를 만듭니다.\n"
                                f"[{ALL_BUTTON}]은 전에 공유한 주문까지, 송장 안 들어간 주문을 모두 넣습니다.\n"
@@ -287,7 +302,11 @@ class OrderBot:
         data = query.get("data", "")
         if chat not in self.allowed:
             return
-        if data.startswith((PENDING_SENT, PENDING_REDO)):
+        if data.startswith(CS_PREFIX):
+            self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
+            if self.cs is not None:
+                self.cs.on_button(chat, query, data)
+        elif data.startswith((PENDING_SENT, PENDING_REDO)):
             self.tg.call("answerCallbackQuery", callback_query_id=query["id"])
             token = data.removeprefix(PENDING_SENT).removeprefix(PENDING_REDO)
             self._settle_pending(chat, query, token, sent=data.startswith(PENDING_SENT))
@@ -380,18 +399,31 @@ def _run_relay(relay: Callable[[], None]) -> None:
         log.exception("앱 송장 요청 처리 실패")
 
 
+def _run_cs(job: Callable[[], None]) -> None:
+    try:
+        job()
+    except Exception:  # customer-question checks are optional work: log it and keep the bot alive
+        log.exception("고객 문의 확인 실패")
+
+
 def poll_forever(bot: OrderBot, sleep: Callable[[float], None] = time.sleep,
                  relay: Callable[[], None] | None = None,
-                 clock: Callable[[], float] = time.monotonic) -> None:
-    """Long-poll Telegram forever; every RELAY_INTERVAL seconds also run relay (the app's 송장 requests)."""
+                 clock: Callable[[], float] = time.monotonic,
+                 cs_job: Callable[[], None] | None = None) -> None:
+    """Long-poll Telegram forever; every RELAY_INTERVAL seconds also run relay (the app's 송장 requests)
+    and every CS_INTERVAL seconds cs_job (new customer questions)."""
     offset = 0
     delay = 0
     conflict_logged = False
     last_relay: float | None = None
+    last_cs: float | None = None
     while True:
         if relay is not None and (last_relay is None or clock() - last_relay >= RELAY_INTERVAL):
             last_relay = clock()
             _run_relay(relay)
+        if cs_job is not None and (last_cs is None or clock() - last_cs >= CS_INTERVAL):
+            last_cs = clock()
+            _run_cs(cs_job)
         try:
             updates = bot.tg.call("getUpdates", offset=offset, timeout=POLL_TIMEOUT)
         except (requests.RequestException, RuntimeError) as exc:
@@ -448,6 +480,21 @@ def _build_relay(settings: BotSettings, store: DataStore | None) -> Callable[[],
     return make_relay(store, TelegramNotifier(settings).send)
 
 
+def _build_cs(settings: BotSettings, tg: Telegram,
+              store: DataStore | None) -> tuple[CsFlow | None, Callable[[], None] | None]:
+    """(button handler, periodic job) of the CS feature, or (None, None) while CS_WATCH_ENABLED is not 1."""
+    if not cs_enabled():
+        log.info("고객 문의(CS) 기능: 꺼짐 (켜려면 .env에 CS_WATCH_ENABLED=1)")
+        return None, None
+    from worker import (
+        cs_watch,  # here, not at the top: cs_watch itself imports this module
+    )
+
+    state_dir = cs_watch.default_state_dir()
+    log.info("고객 문의(CS) 기능: 켜짐 (%d분마다 확인, 상태 폴더 %s)", CS_INTERVAL // 60, state_dir)
+    return CsFlow(tg, state_dir, store), cs_watch.make_bot_job(tg, settings.allowed_chats, store, state_dir)
+
+
 def main() -> int:
     if isinstance(sys.stdout, io.TextIOWrapper):  # None under pythonw
         sys.stdout.reconfigure(encoding="utf-8")
@@ -463,10 +510,12 @@ def main() -> int:
         try:
             settings = BotSettings.load()
             store = _load_data_store()
-            bot = OrderBot(Telegram(settings.token), settings.allowed_chats, log_store=store)
+            tg = Telegram(settings.token)
+            cs_flow, cs_job = _build_cs(settings, tg, store)
+            bot = OrderBot(tg, settings.allowed_chats, log_store=store, cs=cs_flow)
             me = bot.tg.call("getMe")
             log.info("봇 @%s 시작 (허용된 대화방 %d개). 끄려면 Ctrl+C", me["username"], len(settings.allowed_chats))
-            poll_forever(bot, relay=_build_relay(settings, store))
+            poll_forever(bot, relay=_build_relay(settings, store), cs_job=cs_job)
         except BaseException as exc:  # under pythonw the log file is the only place a crash shows up
             if not isinstance(exc, KeyboardInterrupt):
                 log.exception("봇이 멈췄습니다 (작업 스케줄러가 1분 뒤 다시 시작)")

@@ -39,7 +39,7 @@ NOTE_EXACT = "문의에 적힌 주문번호로 연결했습니다"
 
 
 class RetryingSession:
-    """Wraps a requests-like session: GET/POST are retried after a 429 rate-limit refusal."""
+    """Wraps a requests-like session: GET/POST/PUT are retried after a 429 rate-limit refusal."""
 
     def __init__(self, inner: requests.Session | None = None,
                  sleep: Callable[[float], None] = time.sleep) -> None:
@@ -60,6 +60,9 @@ class RetryingSession:
 
     def post(self, url: str, **kwargs) -> requests.Response:
         return self._call(self._inner.post, url, **kwargs)
+
+    def put(self, url: str, **kwargs) -> requests.Response:
+        return self._call(self._inner.put, url, **kwargs)
 
 
 @dataclass(frozen=True)

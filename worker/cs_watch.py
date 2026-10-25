@@ -7,15 +7,20 @@ is written from the store document, and one Telegram message per question goes t
 chats. Nothing is ever posted to Naver. When a question we alerted on is later answered by the
 owner, the pair (AI draft, owner answer) is appended to pairs.jsonl for later scoring.
 
+The same cycle also runs inside the Telegram bot (make_bot_job, every 10 minutes when
+CS_WATCH_ENABLED=1); there the alerts carry buttons that worker.cs_flow handles. This command line
+version sends plain alerts without buttons.
+
 State lives outside the repo (customer data): CS자료/알림기록/ next to the repo, or .env CS_STATE_DIR.
-  notified.json  {key: {channel, id, created, draft, notified_at, alerted, order_kind, done}}
+  notified.json  {key: {sid, channel, id, created, product_name, question, draft, notified_at, alerted,
+                 order_kind, messages, done, outcome?}}
   pairs.jsonl    one line per alerted question that was answered afterwards
+  outcomes.jsonl how each question ended (see worker.cs_outcomes)
 """
 from __future__ import annotations
 
 import argparse
 import io
-import json
 import logging
 import os
 import sys
@@ -28,7 +33,8 @@ from typing import Any
 
 import requests
 
-from worker.cs_alert import NO_AI_NOTE, format_alert, trim
+from store.base import DataStore
+from worker.cs_alert import NO_AI_NOTE, alert_keyboard, format_alert, trim
 from worker.cs_drafter import (
     DraftError,
     DraftResult,
@@ -38,9 +44,31 @@ from worker.cs_drafter import (
     model_name,
 )
 from worker.cs_drafter import draft as make_draft
+from worker.cs_outcomes import (
+    AI_AS_IS,
+    ANSWERED_ELSEWHERE,
+    OWNER_WRITTEN,
+    build_outcome,
+    flush_outbox,
+    record_outcome,
+)
+from worker.cs_state import (
+    CHANNEL_INQUIRY,
+    CHANNEL_QNA,
+    append_pair,
+    load_state,
+    save_state,
+    short_id,
+)
 from worker.inquiry_client import fetch_customer_inquiries, fetch_qnas
 from worker.naver_adapter import KST
-from worker.naver_client import ENV_FILE, fetch_details, fetch_token, load_credentials, read_env_file
+from worker.naver_client import (
+    ENV_FILE,
+    fetch_details,
+    fetch_token,
+    load_credentials,
+    read_env_file,
+)
 from worker.order_link import (
     DEFAULT_LOOKBACK_DAYS,
     LinkResult,
@@ -56,8 +84,6 @@ from worker.telegram_bot import BotSettings, Telegram
 
 CS_DIR_NAME, STATE_DIR_NAME = "CS자료", "알림기록"
 STATE_DIR_KEY = "CS_STATE_DIR"
-NOTIFIED_FILE, PAIRS_FILE = "notified.json", "pairs.jsonl"
-CHANNEL_QNA, CHANNEL_INQUIRY = "상품문의", "고객문의"
 BASELINE_AGE = timedelta(hours=6)  # first run: older unanswered questions are recorded, not alerted
 REASON_MAX = 60
 PAIR_WINDOW_DAYS = 30  # stop waiting for an owner answer after this many days
@@ -74,6 +100,7 @@ class Options:
     state_dir: Path
     days: int = 2
     dry_run: bool = False
+    buttons: bool = False  # inline buttons under each alert (only useful when the bot handles them)
 
 
 @dataclass(frozen=True)
@@ -104,27 +131,6 @@ class Item:
 def default_state_dir() -> Path:
     override = os.environ.get(STATE_DIR_KEY) or read_env_file(ENV_FILE).get(STATE_DIR_KEY, "")
     return Path(override) if override else DATA_DIR / CS_DIR_NAME / STATE_DIR_NAME
-
-
-def load_state(state_dir: Path) -> tuple[dict[str, dict], bool]:
-    """(state, first_run): first_run is True when notified.json does not exist yet."""
-    path = state_dir / NOTIFIED_FILE
-    if not path.exists():
-        return {}, True
-    return json.loads(path.read_text(encoding="utf-8")), False
-
-
-def save_state(state_dir: Path, state: dict[str, dict]) -> None:
-    state_dir.mkdir(parents=True, exist_ok=True)
-    tmp = state_dir / (NOTIFIED_FILE + ".tmp")
-    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(state_dir / NOTIFIED_FILE)
-
-
-def append_pair(state_dir: Path, pair: dict) -> None:
-    state_dir.mkdir(parents=True, exist_ok=True)
-    with (state_dir / PAIRS_FILE).open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(pair, ensure_ascii=False) + "\n")
 
 
 # --- items ------------------------------------------------------------------------------------
@@ -166,10 +172,11 @@ def link_item(item: Item, details: list[dict]) -> LinkResult:
 
 
 def _entry(item: Item, now: datetime, *, draft: DraftResult | None = None, alerted: bool = False,
-           order_kind: str = "") -> dict:
-    return {"channel": item.channel, "id": item.id, "created": item.created_text,
+           order_kind: str = "", messages: dict[str, int] | None = None) -> dict:
+    return {"sid": short_id(item.key), "channel": item.channel, "id": item.id, "created": item.created_text,
+            "product_name": item.product_name, "question": item.question,
             "draft": asdict(draft) if draft else None, "notified_at": now.isoformat(),
-            "alerted": alerted, "order_kind": order_kind, "done": False}
+            "alerted": alerted, "order_kind": order_kind, "messages": messages or {}, "done": False}
 
 
 def _pair(item: Item, entry: dict, now: datetime) -> dict:
@@ -180,13 +187,29 @@ def _pair(item: Item, entry: dict, now: datetime) -> dict:
             "owner_answer": item.owner_answer, "answered_seen_at": now.isoformat()}
 
 
-def record_pairs(state_dir: Path, state: dict[str, dict], answered: list[Item],
-                 now: datetime) -> tuple[dict[str, dict], int]:
-    """Write (AI draft, owner answer) pairs for alerted questions now answered; each only once."""
+def _posted_by_bot(entry: dict) -> bool:
+    """The answer on Naver is the one the bot posted (a pair would only repeat it)."""
+    return entry.get("outcome") in (AI_AS_IS, OWNER_WRITTEN) and not entry.get("outcome_simulated")
+
+
+def _settle_elsewhere(state_dir: Path, store: DataStore | None, item: Item, entry: dict, now: datetime) -> dict:
+    """An alerted question answered in the seller center without a choice in Telegram."""
+    record_outcome(state_dir, store, build_outcome(item.key, entry, ANSWERED_ELSEWHERE, now,
+                                                   owner_answer=item.owner_answer))
+    return {**entry, "outcome": ANSWERED_ELSEWHERE, "outcome_simulated": False,
+            "outcome_at": now.isoformat(timespec="seconds")}
+
+
+def record_pairs(state_dir: Path, state: dict[str, dict], answered: list[Item], now: datetime,
+                 store: DataStore | None = None) -> tuple[dict[str, dict], int]:
+    """Write (AI draft, owner answer) pairs for alerted questions now answered; each only once.
+    Alerted questions nobody settled in Telegram also get an answered_elsewhere outcome."""
     paired = 0
     for item in answered:
         entry = state[item.key]
-        if entry.get("alerted") and entry.get("draft"):
+        if entry.get("alerted") and not entry.get("outcome"):
+            entry = _settle_elsewhere(state_dir, store, item, entry, now)
+        if entry.get("alerted") and entry.get("draft") and not _posted_by_bot(entry):
             append_pair(state_dir, _pair(item, entry, now))
             paired += 1
         state = {**state, item.key: {**entry, "done": True}}
@@ -200,10 +223,11 @@ def _describe(channel: str, created: datetime) -> str:
     return f"[{channel}] {created.astimezone(KST):%Y-%m-%d %H:%M}"
 
 
-def _ai_draft(client: Any, doc: str, model: str, view: InquiryView) -> tuple[DraftResult | None, str]:
+def _ai_draft(client: Any, doc: str, model: str, view: InquiryView,
+              off_note: str = NO_AI_NOTE) -> tuple[DraftResult | None, str]:
     """(draft, note): the note replaces the draft section of the alert when there is no draft."""
     if client is None:
-        return None, NO_AI_NOTE
+        return None, off_note
     try:
         return make_draft(client, doc, view, model), NO_AI_NOTE
     except DraftError as err:
@@ -211,13 +235,15 @@ def _ai_draft(client: Any, doc: str, model: str, view: InquiryView) -> tuple[Dra
         return None, f"(AI 초안 실패: {trim(str(err), REASON_MAX)})"
 
 
-def _send_everywhere(tg: Any, chats: frozenset[int], text: str) -> bool:
-    """True when at least one chat got the message (failures are logged, not raised)."""
-    sent = False
+def _send_everywhere(tg: Any, chats: frozenset[int], text: str,
+                     markup: dict | None = None) -> dict[int, int | None]:
+    """{chat: message id} of the chats that got the message; empty when none did (failures are logged)."""
+    extra = {"reply_markup": markup} if markup else {}
+    sent: dict[int, int | None] = {}
     for chat in sorted(chats):
         try:
-            tg.call("sendMessage", chat_id=chat, text=text, disable_web_page_preview=True)
-            sent = True
+            result = tg.call("sendMessage", chat_id=chat, text=text, disable_web_page_preview=True, **extra)
+            sent[chat] = result.get("message_id") if isinstance(result, dict) else None
         except (RuntimeError, requests.RequestException, ValueError) as err:
             log.error("텔레그램 전송 실패 (채팅 %s): %s", chat, err)
     return sent
@@ -258,7 +284,10 @@ def _telegram_target(opts: Options) -> tuple[Any, frozenset[int]]:
     return Telegram(settings.token), settings.allowed_chats
 
 
-def run_cycle(opts: Options, client: Any, doc: str, model: str, now: datetime | None = None) -> CycleStats:
+def run_cycle(opts: Options, client: Any, doc: str, model: str, now: datetime | None = None, *,
+              target: tuple[Any, frozenset[int]] | None = None, store: DataStore | None = None,
+              ai_off_note: str = NO_AI_NOTE) -> CycleStats:
+    """One check. `target` = (Telegram, chats) from the bot; without it the .env bot settings are used."""
     now = now or datetime.now(KST)
     state, first_run = load_state(opts.state_dir)
     token = fetch_token(load_credentials())
@@ -270,7 +299,7 @@ def run_cycle(opts: Options, client: Any, doc: str, model: str, now: datetime | 
 
     paired = 0
     if answered and not opts.dry_run:
-        state, paired = record_pairs(opts.state_dir, state, answered, now)
+        state, paired = record_pairs(opts.state_dir, state, answered, now, store)
     skipped: list[Item] = []
     if first_run:
         state, skipped, pending = _baseline(state, pending, now)
@@ -281,24 +310,57 @@ def run_cycle(opts: Options, client: Any, doc: str, model: str, now: datetime | 
     if not pending:
         return CycleStats(skipped=len(skipped), paired=paired)
 
-    tg, chats = _telegram_target(opts)
+    tg, chats = target or _telegram_target(opts)
     details = _fetch_order_details(token, pending, now)
     alerted = failed = 0
     for item in pending:
         link = link_item(item, details)
         view = InquiryView(item.channel, item.created, item.product_name, item.question, link)
-        result, note = _ai_draft(client, doc, model, view)
+        result, note = _ai_draft(client, doc, model, view, ai_off_note)
         text = format_alert(view, link, result, note)
         if opts.dry_run:
             print(text + "\n" + "-" * 30)
             alerted += 1
-        elif _send_everywhere(tg, chats, text):
-            state = {**state, item.key: _entry(item, now, draft=result, alerted=True, order_kind=link.kind)}
+        elif sent := _send_everywhere(tg, chats, text,
+                                      alert_keyboard(short_id(item.key), result) if opts.buttons else None):
+            messages = {str(chat): mid for chat, mid in sent.items() if mid}
+            state = {**state, item.key: _entry(item, now, draft=result, alerted=True, order_kind=link.kind,
+                                               messages=messages)}
             save_state(opts.state_dir, state)  # after EACH send: a crash must not re-alert
             alerted += 1
         else:
             failed += 1
     return CycleStats(alerted, len(skipped), paired, failed)
+
+
+# --- inside the Telegram bot ------------------------------------------------------------------
+
+def make_bot_job(tg: Any, chats: frozenset[int], store: DataStore | None,
+                 state_dir: Path | None = None) -> Callable[[], None]:
+    """The zero-argument callable the bot runs every CS_INTERVAL seconds: one cycle with buttons."""
+    directory = state_dir or default_state_dir()
+    try:
+        client = make_client()
+    except Exception as exc:  # noqa: BLE001  # a broken AI setup must not keep the alerts from going out
+        log.error("AI 연결 준비 실패, AI 없이 알립니다: %s", type(exc).__name__)
+        client = None
+
+    def job() -> None:
+        active, doc, note = client, "", NO_AI_NOTE
+        if client is not None:  # re-read each cycle so store-document edits apply without a restart
+            try:
+                doc = load_store_doc(store=store)
+            except DraftError as err:
+                log.error("가게 정보 문서를 읽지 못해 AI 없이 알립니다: %s", err)
+                active, note = None, f"(AI 초안 꺼짐: {trim(str(err), REASON_MAX)})"
+        stats = run_cycle(Options(directory, buttons=True), active, doc, model_name(),
+                          target=(tg, chats), store=store, ai_off_note=note)
+        if store is not None:
+            flush_outbox(directory, store)
+        if stats != CycleStats():
+            log.info(_summary(stats))
+
+    return job
 
 
 # --- CLI --------------------------------------------------------------------------------------

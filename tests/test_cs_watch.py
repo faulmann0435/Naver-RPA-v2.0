@@ -48,7 +48,7 @@ class FakeTelegram:
         if any(marker in text for marker in FakeTelegram.fail_on) and params["chat_id"] == 111:
             raise RuntimeError("Telegram sendMessage: boom")
         FakeTelegram.sent.append((method, params))
-        return {}
+        return {"message_id": 100 + len(FakeTelegram.sent)}
 
 
 class World:

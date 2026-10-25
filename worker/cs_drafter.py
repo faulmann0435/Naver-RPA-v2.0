@@ -5,11 +5,13 @@ Claude is asked through the Messages API; the long store document sits in the sy
 cache breakpoint (so repeated questions reuse it), and a JSON schema (`output_config.format`)
 makes the reply machine-readable.
 
-.env keys: ANTHROPIC_API_KEY, CS_MODEL (default below), CS_STORE_DOC (path of the store document).
+.env keys: ANTHROPIC_API_KEY, CS_MODEL (default below), CS_STORE_DOC (path of the store document;
+used when the data repository has no cs/가게정보.md).
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -17,14 +19,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from store.base import DataStore
 from worker.naver_adapter import KST
 from worker.naver_client import ENV_FILE, read_env_file
 from worker.order_link import LinkResult, to_prompt_text
 from worker.paths import DATA_DIR
 
+log = logging.getLogger("cs_drafter")
+
 DEFAULT_MODEL = "claude-sonnet-5-5"
 MODEL_KEY, DOC_KEY, API_KEY = "CS_MODEL", "CS_STORE_DOC", "ANTHROPIC_API_KEY"
 DEFAULT_DOC = DATA_DIR / "CS자료" / "가게정보_v2.md"
+STORE_DOC_PATH = "cs/가게정보.md"  # in the data repository; the developer uploads it there
 MAX_TOKENS = 4096  # the model thinks before answering; 1024 cut replies off mid-JSON
 KINDS = ("배송 일정", "상품 정보", "보관·조리", "취소·변경", "불만·클레임", "기타")
 ROUTE_AI, ROUTE_HUMAN = "AI답변", "사람에게"
@@ -104,7 +110,20 @@ def doc_path() -> Path:
     return Path(override) if override else DEFAULT_DOC
 
 
-def load_store_doc(path: Path | None = None) -> str:
+def _store_doc(store: DataStore) -> str:
+    """The document from the data repository; '' when it is missing, empty or the store fails."""
+    try:
+        snapshot = store.read_text(STORE_DOC_PATH)
+    except Exception as exc:  # noqa: BLE001  # the local file is the fallback
+        log.warning("데이터 저장소의 가게 정보 문서를 읽지 못했습니다 (%s), 내 PC 파일을 씁니다.", type(exc).__name__)
+        return ""
+    return snapshot.content.strip() if snapshot else ""
+
+
+def load_store_doc(path: Path | None = None, store: DataStore | None = None) -> str:
+    """The store document: from the data repository when `store` has one, else the local file."""
+    if store is not None and path is None and (text := _store_doc(store)):
+        return text
     target = path or doc_path()
     if not target.is_file():
         raise DraftError(f"가게 정보 문서를 찾을 수 없습니다: {target} (.env의 {DOC_KEY} 확인)")
