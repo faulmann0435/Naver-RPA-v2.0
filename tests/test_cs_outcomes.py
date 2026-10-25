@@ -141,6 +141,16 @@ def test_stats_math_recent_and_all_time(tmp_path):
     assert text.rstrip().endswith("AI 그대로 비율이 충분히 높아지면 자동 등록을 검토할 수 있습니다.")
 
 
+def test_stats_leave_out_questions_without_an_ai_draft(tmp_path):
+    from worker.cs_state import append_jsonl
+    no_draft = {**ENTRY, "draft": None}
+    append_jsonl(tmp_path, OUTCOMES_FILE, co.build_outcome("qna:1", ENTRY, co.AI_AS_IS, NOW))
+    append_jsonl(tmp_path, OUTCOMES_FILE, co.build_outcome("qna:2", no_draft, co.OWNER_WRITTEN, NOW))
+    recent = co.stats_text(tmp_path, NOW).split("\n\n")[1]
+    assert "총 2건" in recent and "✅ AI 그대로 1건 (100%)" in recent and "✍️ 직접 씀 0건 (0%)" in recent
+    assert "AI 초안이 없던 1건" in recent
+
+
 def test_stats_without_data_and_simulated_note(tmp_path):
     from worker.cs_state import append_jsonl
     assert "아직 없습니다" in co.stats_text(tmp_path, NOW)

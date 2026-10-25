@@ -125,8 +125,9 @@ def _pct(part: int, whole: int) -> str:
 
 
 def _choices(outcomes: list[dict]) -> list[dict]:
-    """Questions where the owner decided in Telegram (answered_elsewhere had no choice)."""
-    return [o for o in outcomes if o["outcome"] != ANSWERED_ELSEWHERE]
+    """Questions where the owner judged an AI draft in Telegram (answered_elsewhere had no choice,
+    and without a draft there was nothing to judge)."""
+    return [o for o in outcomes if o["outcome"] != ANSWERED_ELSEWHERE and (o.get("ai_draft") or "").strip()]
 
 
 def _count(outcomes: list[dict], kind: str) -> int:
@@ -139,12 +140,15 @@ def _section(title: str, outcomes: list[dict]) -> str:
     choices = _choices(outcomes)
     n = len(choices)
     lines = [f"{title}: 총 {len(outcomes)}건",
-             f"✅ AI 그대로 {_count(outcomes, AI_AS_IS)}건 ({_pct(_count(outcomes, AI_AS_IS), n)})"
-             f" · ✍️ 직접 씀 {_count(outcomes, OWNER_WRITTEN)}건 ({_pct(_count(outcomes, OWNER_WRITTEN), n)})"
-             f" · 🙋 판매자센터 {_count(outcomes, SELLER_CENTER)}건 ({_pct(_count(outcomes, SELLER_CENTER), n)})"]
+             f"✅ AI 그대로 {_count(choices, AI_AS_IS)}건 ({_pct(_count(choices, AI_AS_IS), n)})"
+             f" · ✍️ 직접 씀 {_count(choices, OWNER_WRITTEN)}건 ({_pct(_count(choices, OWNER_WRITTEN), n)})"
+             f" · 🙋 판매자센터 {_count(choices, SELLER_CENTER)}건 ({_pct(_count(choices, SELLER_CENTER), n)})"]
     elsewhere = _count(outcomes, ANSWERED_ELSEWHERE)
     if elsewhere:
         lines.append(f"(판매자센터에서 따로 답함 {elsewhere}건은 비율에서 뺐습니다)")
+    no_draft = sum(1 for o in outcomes if o["outcome"] != ANSWERED_ELSEWHERE and o not in choices)
+    if no_draft:
+        lines.append(f"(AI 초안이 없던 {no_draft}건은 비율에서 뺐습니다)")
     for route in (ROUTE_AI, ROUTE_HUMAN):
         group = [o for o in choices if o.get("route") == route]
         if group:
