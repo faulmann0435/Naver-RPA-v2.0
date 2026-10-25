@@ -16,8 +16,8 @@ def at(day, hour, minute=0):
 
 def test_defaults():
     schedule, warnings = build_schedule("", "")
-    assert (schedule.start, schedule.end) == (time(9), time(18)) and schedule.days == {0, 1, 2, 3, 4}
-    assert warnings == [] and schedule.describe() == "월화수목금 09:00-18:00"
+    assert (schedule.start, schedule.end) == (time(9), time(18, 10)) and schedule.days == {0, 1, 2, 3, 4}
+    assert warnings == [] and schedule.describe() == "월화수목금 09:00-18:10"
 
 
 def test_custom_values():
@@ -49,7 +49,7 @@ def test_invalid_values_fall_back_to_defaults_with_one_warning_each():
 
 
 @pytest.mark.parametrize("moment, expected", [
-    (at(12, 8, 59), False), (at(12, 9, 0), True), (at(12, 17, 59), True), (at(12, 18, 0), False),
+    (at(12, 8, 59), False), (at(12, 9, 0), True), (at(12, 17, 59), True), (at(12, 18, 9), True), (at(12, 18, 10), False),
     (at(16, 12), True),   # Friday
     (at(17, 12), False),  # Saturday
     (at(18, 12), False),  # Sunday

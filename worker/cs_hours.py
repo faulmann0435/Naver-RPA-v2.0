@@ -1,6 +1,6 @@
 """Business hours of the CS alerts (the owner does not read Telegram outside them).
 
-.env keys (read every cycle): CS_WORK_HOURS (default "09:00-18:00", start inclusive, end exclusive)
+.env keys (read every cycle): CS_WORK_HOURS (default "09:00-18:10", start inclusive, end exclusive)
 and CS_WORK_DAYS (default "월화수목금", Korean weekday letters, Monday = 월). A bad value is reported
 as a warning and replaced by its default; it never raises.
 """
@@ -15,7 +15,7 @@ from worker.naver_adapter import KST
 from worker.naver_client import ENV_FILE, read_env_file
 
 HOURS_KEY, DAYS_KEY = "CS_WORK_HOURS", "CS_WORK_DAYS"
-DEFAULT_HOURS, DEFAULT_DAYS = "09:00-18:00", "월화수목금"
+DEFAULT_HOURS, DEFAULT_DAYS = "09:00-18:10", "월화수목금"  # 18:10: the last 10-minute check still catches questions sent before 18:00
 WEEKDAYS = "월화수목금토일"  # index = datetime.weekday()
 _HOURS = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$")
 

@@ -234,7 +234,7 @@ def test_bot_job_looks_a_week_back_and_passes_the_time(job_env, tmp_path):
 
 
 @pytest.mark.parametrize("moment", [
-    datetime(2026, 10, 13, 8, 59, tzinfo=KST), datetime(2026, 10, 13, 18, 0, tzinfo=KST),
+    datetime(2026, 10, 13, 8, 59, tzinfo=KST), datetime(2026, 10, 13, 18, 10, tzinfo=KST),
     datetime(2026, 10, 17, 11, 0, tzinfo=KST),  # Saturday
 ])
 def test_bot_job_does_nothing_outside_business_hours(job_env, tmp_path, monkeypatch, moment):
