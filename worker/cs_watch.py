@@ -339,14 +339,20 @@ def make_bot_job(tg: Any, chats: frozenset[int], store: DataStore | None,
                  state_dir: Path | None = None) -> Callable[[], None]:
     """The zero-argument callable the bot runs every CS_INTERVAL seconds: one cycle with buttons."""
     directory = state_dir or default_state_dir()
-    try:
-        client = make_client()
-    except Exception as exc:  # noqa: BLE001  # a broken AI setup must not keep the alerts from going out
-        log.error("AI 연결 준비 실패, AI 없이 알립니다: %s", type(exc).__name__)
-        client = None
+
+    def ai_client() -> tuple[Any, str]:
+        """(client or None, note shown instead of a draft); read each cycle so a key added to .env
+        applies without a restart, and a broken AI setup says why instead of "key missing"."""
+        try:
+            return make_client(), NO_AI_NOTE
+        except Exception as exc:  # noqa: BLE001  # a broken AI setup must not keep the alerts from going out
+            reason = str(exc) if isinstance(exc, DraftError) else type(exc).__name__
+            log.error("AI 연결 준비 실패, AI 없이 알립니다: %s", reason)
+            return None, f"(AI 초안 꺼짐: {trim(reason, REASON_MAX)})"
 
     def job() -> None:
-        active, doc, note = client, "", NO_AI_NOTE
+        client, note = ai_client()
+        active, doc = client, ""
         if client is not None:  # re-read each cycle so store-document edits apply without a restart
             try:
                 doc = load_store_doc(store=store)

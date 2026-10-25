@@ -172,6 +172,21 @@ def test_make_client_none_without_key(monkeypatch, tmp_path):
     assert make_client() is None
 
 
+def test_make_client_explains_a_missing_ai_package(monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+
+    def no_anthropic(name, *args, **kwargs):
+        if name == "anthropic":
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(builtins, "__import__", no_anthropic)
+    with pytest.raises(DraftError, match="anthropic"):
+        make_client()
+
+
 def test_make_client_reads_env_file_and_builds_client(monkeypatch, tmp_path):
     env = tmp_path / ".env"
     env.write_text("ANTHROPIC_API_KEY=sk-test\n", encoding="utf-8")

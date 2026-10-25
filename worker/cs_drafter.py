@@ -192,5 +192,8 @@ def make_client():
     key = _setting(API_KEY)
     if not key:
         return None
-    import anthropic
+    try:
+        import anthropic
+    except ImportError:
+        raise DraftError("AI 부품(anthropic)이 설치되지 않았습니다 — 최신 ZIP으로 덮어쓴 뒤 설치.bat을 다시 실행해 주세요") from None
     return anthropic.Anthropic(api_key=key)

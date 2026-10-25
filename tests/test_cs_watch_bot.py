@@ -191,3 +191,24 @@ def test_bot_job_survives_a_broken_ai_setup(job_env, tmp_path, monkeypatch):
     monkeypatch.setattr(cs_watch, "make_client", boom)
     cs_watch.make_bot_job(object(), CHATS, None, tmp_path)()
     assert job_env[0][1] is None
+    assert job_env[0][3]["ai_off_note"] != NO_AI_NOTE and "ImportError" in job_env[0][3]["ai_off_note"]
+
+
+def test_bot_job_names_the_ai_setup_problem(job_env, tmp_path, monkeypatch):
+    def missing_package():
+        raise DraftError("AI 부품(anthropic)이 설치되지 않았습니다")
+
+    monkeypatch.setattr(cs_watch, "make_client", missing_package)
+    cs_watch.make_bot_job(object(), CHATS, None, tmp_path)()
+    assert "anthropic" in job_env[0][3]["ai_off_note"]
+
+
+def test_bot_job_picks_up_a_key_added_later(job_env, tmp_path, monkeypatch):
+    clients = iter([None, "client"])
+    monkeypatch.setattr(cs_watch, "make_client", lambda: next(clients))
+    store = MemoryStore()
+    store.write_text("cs/가게정보.md", "d", None, "m")
+    job = cs_watch.make_bot_job(object(), CHATS, store, tmp_path)
+    job()
+    job()
+    assert [seen[1] for seen in job_env] == [None, "client"]
