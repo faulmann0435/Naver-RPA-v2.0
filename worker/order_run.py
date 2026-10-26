@@ -24,7 +24,12 @@ from core.pipeline import ProcessResult, process_orders
 from store.dictionary_repo import load_state
 from store.github_store import GitHubStore
 from store.rules_repo import load_config_from_store
-from worker.naver_adapter import KST, details_to_dataframe, split_shippable
+from worker.naver_adapter import (
+    KST,
+    SHIPPABLE_STATUS,
+    details_to_dataframe,
+    split_shippable,
+)
 from worker.naver_client import (
     fetch_changed_ids,
     fetch_details,
@@ -104,11 +109,15 @@ def write_pending(pending: dict[str, dict], path: Path = PENDING_FILE) -> None:
 
 
 def fetch_paid_items(days: int = LOOKBACK_DAYS, session: requests.Session | None = None) -> list[dict]:
+    """Every product order changed in the last `days` days, whatever the change; split_shippable picks
+    the paid ones. Not filtered by lastChangedType=PAYED: that keeps only orders whose LAST change is the
+    payment, so a paid order changed afterwards (e.g. its delivery address) was silently missing."""
     # One look-back is a burst of calls (one per day); Naver answers GW.RATE_LIMIT (429) to bursts.
     http = RetryingSession(session, sleep=RETRY_SLEEP)
     now = datetime.now(KST)
     token = fetch_token(load_credentials(), http)
-    return fetch_details(token, fetch_changed_ids(token, now - timedelta(days=days), now, session=http), http)
+    ids = fetch_changed_ids(token, now - timedelta(days=days), now, None, http)
+    return fetch_details(token, ids, http) if ids else []
 
 
 def _recipient(item: Mapping) -> str:
@@ -123,7 +132,9 @@ def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
                ledger: Path = LEDGER_FILE, include_shared: bool = False) -> RunResult:
     """Fetch, filter, convert and build the purchase orders. Changes nothing on the store."""
     items = fetch()
-    shippable, claims = split_shippable(items)
+    shippable, not_shippable = split_shippable(items)
+    # paid but held back by a cancel/return/exchange request; shipped or cancelled orders are not news
+    claims = [i for i in not_shippable if i["productOrder"].get("productOrderStatus") == SHIPPABLE_STATUS]
     shared = read_ledger(ledger)
     is_shared = lambda i: str(i["productOrder"]["productOrderId"]) in shared
     in_ledger = [i for i in shippable if is_shared(i)]
