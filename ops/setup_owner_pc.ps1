@@ -10,7 +10,7 @@ $dataDir = 'C:\choigoda-data'
 $dataRepo = 'faulmann0435/Naver-RPA-data'
 $dataBranch = 'dev'
 # Shown on the first screen so a stale copy (old ZIP not overwritten) is easy to spot. Bump on every change.
-$SetupEdition = '2026-10-26b'
+$SetupEdition = '2026-10-26c'
 $env:PYTHONUTF8 = '1'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 
@@ -116,7 +116,7 @@ $ghToken = Ask-Value '4) GitHub 데이터 열람 토큰  [개발자에게 받은
 Write-Host ''
 Write-Host '[선택] 고객 문의 AI 답변 초안' -ForegroundColor Cyan
 Write-Host '  Anthropic API 키를 넣으면 새 고객 문의마다 텔레그램으로 AI 초안과 버튼이 옵니다. 없으면 Enter로 건너뜁니다.'
-Write-Host '  (답변을 네이버에 실제로 올리는 기능은 개발자가 확인한 뒤 따로 켭니다. 지금은 시험 모드입니다)'
+Write-Host '  (텔레그램에서 [올리기]를 누르면 네이버에 바로 답변이 올라갑니다)'
 $aiKey = Ask-OptionalSecret '5) Anthropic API 키  [sk-ant-... 값, 건너뛰려면 Enter]' $envMap['ANTHROPIC_API_KEY']
 
 $chatIds = if ($envMap.Contains('TELEGRAM_ALLOWED_CHAT_IDS')) { $envMap['TELEGRAM_ALLOWED_CHAT_IDS'] } else { '' }
@@ -128,10 +128,13 @@ $envUpdates = [ordered]@{
     RPA_DATA_DIR                 = $dataDir
 }
 if ($aiKey) {
-    # CS_ANSWER_ENABLED is deliberately NOT set: answers stay in test mode until the first live post is verified.
     $envUpdates['ANTHROPIC_API_KEY'] = $aiKey
     $envUpdates['CS_WATCH_ENABLED'] = '1'
 }
+# Real posting is on by default once there is an AI key, new or kept with Enter (the owner confirms every
+# answer with [올리기]); a value already in .env is kept, so CS_ANSWER_ENABLED=0 survives a reinstall.
+$hasAiKey = [bool]($aiKey -or $envMap['ANTHROPIC_API_KEY'])
+if ($hasAiKey -and -not $envMap.Contains('CS_ANSWER_ENABLED')) { $envUpdates['CS_ANSWER_ENABLED'] = '1' }
 Update-EnvFile $envFile $envUpdates
 $tomlToken = $ghToken.Replace('\', '\\')
 $toml = "[data_store]`r`nrepo = `"$dataRepo`"`r`nbranch = `"$dataBranch`"`r`ntoken = `"$tomlToken`"`r`n"
@@ -139,7 +142,11 @@ Write-Utf8NoBom $secretsFile $toml
 if (-not (Test-Path -LiteralPath $dataDir)) { New-Item -ItemType Directory -Path $dataDir -Force | Out-Null }
 Show-Ok '설정을 저장했습니다 (.env, .streamlit\secrets.toml)'
 Show-Ok "데이터 폴더: $dataDir"
-if ($aiKey) { Show-Ok '고객 문의 알림을 켰습니다 (답변 올리기는 시험 모드)' }
+if ($hasAiKey) {
+    $answerOn = if ($envUpdates.Contains('CS_ANSWER_ENABLED')) { $envUpdates['CS_ANSWER_ENABLED'] } else { $envMap['CS_ANSWER_ENABLED'] }
+    if ($answerOn -eq '1') { Show-Ok '고객 문의 알림을 켰습니다 ([올리기] = 네이버에 실제 등록)' }
+    else { Show-Ok '고객 문의 알림을 켰습니다 (답변 올리기는 시험 모드)' }
+}
 
 # ---- 5. Naver + Telegram --------------------------------------------------------------
 Show-Step 5 '네이버·텔레그램 연결 확인'
