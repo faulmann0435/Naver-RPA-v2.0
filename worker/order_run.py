@@ -46,6 +46,7 @@ PENDING_FILE = DATA_DIR / "발주기록" / "공유대기_발주.json"
 LOOKBACK_DAYS = 14  # covers a long holiday; the ledger keeps the overlap from being sent twice
 ALL_LOOKBACK_DAYS = 30  # [발송 안 된 주문 전부] also reaches pre-orders paid long before shipping
 MAX_NAMES = 10  # recipients listed in the summary before "외 N건"
+PLACE_ORDER_DONE = "OK"  # placeOrderStatus after 발주확인; the seller center lists those under 발송대기
 RETRY_SLEEP = time.sleep  # wait used between retries after Naver's rate-limit refusal (swapped in tests)
 
 
@@ -70,6 +71,9 @@ class RunResult:
     when: datetime = field(default_factory=lambda: datetime.now(KST))
     shared_names: tuple[str, ...] = ()  # recipients of the ledger orders (left out, or put back)
     include_shared: bool = False
+    # every unshipped paid order Naver has, ledger or not, split like the seller center's screen
+    new_orders: int = 0  # 신규주문: 발주확인 not done yet
+    waiting_orders: int = 0  # 발송대기: 발주확인 done
 
 
 def load_engine(secrets_file: Path = SECRETS_FILE) -> Engine:
@@ -138,6 +142,7 @@ def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
     shared = read_ledger(ledger)
     is_shared = lambda i: str(i["productOrder"]["productOrderId"]) in shared
     in_ledger = [i for i in shippable if is_shared(i)]
+    confirmed = sum(1 for i in shippable if i["productOrder"].get("placeOrderStatus") == PLACE_ORDER_DONE)
     todo = shippable if include_shared else [i for i in shippable if not is_shared(i)]
     engine = engine_loader()
     result: ProcessResult | None = None
@@ -155,6 +160,8 @@ def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
         source=engine.source,
         shared_names=tuple(dict.fromkeys(_recipient(i) for i in in_ledger)),
         include_shared=include_shared,
+        new_orders=len(shippable) - confirmed,
+        waiting_orders=confirmed,
     )
 
 
@@ -178,19 +185,27 @@ def _shared_line(run: RunResult) -> str:
     return line + (f": {_names(run.shared_names)}" if run.already_shared else "")
 
 
+def _naver_line(run: RunResult) -> str:
+    """The counts to hold against the seller center's screen (신규주문 + 발송대기)."""
+    total = run.new_orders + run.waiting_orders
+    return f"· 네이버 발송 전 주문 {total}건 = 신규주문 {run.new_orders} + 발송대기 {run.waiting_orders}"
+
+
 def summary(run: RunResult) -> str:
     """The message that goes with the files."""
     if not run.paid:
-        return f"📭 새로 발주할 주문이 없습니다 ({run.when:%m/%d %H:%M})\n{_shared_line(run)}"
-    warn = run.unmatched or run.needs_review
+        return f"📭 새로 발주할 주문이 없습니다 ({run.when:%m/%d %H:%M})\n{_naver_line(run)}\n{_shared_line(run)}"
     lines = [
         f"📦 발주서 {len(run.files)}개 ({run.when:%m/%d %H:%M})",
-        f"· 결제완료 {run.paid}건 반영",
+        _naver_line(run),
+        f"· 이번 발주서에 넣은 주문 {run.paid}건",
         f"· 취소·반품·교환 요청으로 뺀 주문 {run.left_out_claims}건",
         _shared_line(run),
-        f"· {'⚠️' if run.unmatched else '✅'} 미등록 품목 {run.unmatched}건"
-        + (f" · 확인 필요 {run.needs_review}줄" if run.needs_review else ""),
     ]
-    if warn:
-        lines.append("미등록 품목은 v15 앱에서 등록한 뒤 다시 [발주 처리]를 눌러 주세요.")
+    if run.unmatched:
+        lines.append(f"· ⚠️ 미등록 품목 {run.unmatched}건 → v15 앱에서 등록한 뒤 다시 [발주 처리]를 눌러 주세요.")
+    else:
+        lines.append("· ✅ 미등록 품목 없음")
+    if run.needs_review:
+        lines.append(f"· ℹ️ 사전 검토 표시가 남은 품목 {run.needs_review}줄 (발주서에는 정상 반영, 사전 정리용 참고)")
     return "\n".join(lines)
