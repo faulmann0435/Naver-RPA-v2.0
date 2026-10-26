@@ -4,8 +4,10 @@ Used by worker.telegram_bot.OrderBot (same bot process, same token). An alert (s
 has buttons; this module handles what the owner taps or types:
 
   ✅ 이대로 올리기  -> "이 답변을 올릴까요?" + [올리기] [취소]
-  ✍️ 직접 쓰기     -> waits for the next text of that chat (or a Telegram reply to the alert)
-                      -> "이렇게 올릴까요?" + [올리기] [다시 쓰기] [취소]
+  ✏️ 초안 고쳐서 올리기 -> sends the AI draft as a tap-to-copy block, then waits for the next text of
+                      that chat (or a Telegram reply to the alert) -> "이렇게 올릴까요?"
+                      + [올리기] [다시 고치기] [취소]; 다시 고치기 sends the owner's last version
+  ✍️ 직접 쓰기     -> the same without a block to copy, for a question without an AI draft
   🙋 판매자센터에서 -> the owner answers in the seller center; buttons removed
 
 Waiting/preview state is kept in cs_pending.json (a restart keeps it, 24 hours). A preview is
@@ -15,6 +17,7 @@ really reaches Naver is decided by CS_ANSWER_ENABLED (see worker.cs_answer).
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 from collections.abc import Callable, Mapping
 from datetime import datetime
@@ -30,6 +33,7 @@ from worker.cs_alert import (
     ACT_SELLER,
     ACT_WRITE,
     CS_PREFIX,
+    SAFE_LIMIT,
     preview_keyboard,
 )
 from worker.cs_answer import (
@@ -42,6 +46,7 @@ from worker.cs_answer import (
 from worker.cs_outcomes import (
     AI_AS_IS,
     ANSWERED_ELSEWHERE,
+    OWNER_EDITED,
     OWNER_WRITTEN,
     SELLER_CENTER,
     build_outcome,
@@ -65,6 +70,7 @@ POSTED_NOTICE = "✅ 네이버에 답변을 올렸습니다."
 EXPIRED = "이 버튼은 만료됐습니다."
 SETTLED = "이미 처리된 문의입니다."
 ASK_TEXT = "답변을 입력해 주세요 (취소하려면 /취소)"
+ASK_EDIT = "✏️ 아래 글을 눌러 복사한 뒤, 고쳐서 보내 주세요 (취소하려면 /취소)"
 SOURCE_AI, SOURCE_OWNER = "ai", "owner"
 
 log = logging.getLogger("telegram_bot")
@@ -76,6 +82,18 @@ def default_answer(entry: Mapping, text: str) -> AnswerResult:
 
 def fingerprint(text: str) -> str:
     return hashlib.sha1(text.encode()).hexdigest()[:6]
+
+
+def _draft_text(entry: Mapping) -> str:
+    return ((entry.get("draft") or {}).get("draft") or "").strip()
+
+
+def _outcome_of(posted: str, draft: str) -> str:
+    """The draft unchanged is AI 그대로 (also when the owner sent it back as is); a changed text is an
+    edit of the draft when there was one, else the owner's own answer."""
+    if draft and posted == draft:
+        return AI_AS_IS
+    return OWNER_EDITED if draft else OWNER_WRITTEN
 
 
 class CsFlow:
@@ -154,7 +172,7 @@ class CsFlow:
             handlers[action](chat, key, entry)
 
     def _ask_ai(self, chat: int, key: str, entry: dict) -> None:
-        text = ((entry.get("draft") or {}).get("draft") or "").strip()
+        text = _draft_text(entry)
         if not text:
             self._send(chat, "올릴 AI 초안이 없습니다. [✍️ 직접 쓰기]를 눌러 주세요.")
             return
@@ -175,9 +193,18 @@ class CsFlow:
         return True
 
     def _ask_write(self, chat: int, key: str, entry: dict) -> None:
-        self._set_preview(chat, entry["sid"], None)
-        self._set_waiting(chat, entry["sid"])
-        self._send(chat, ASK_TEXT)
+        """Wait for the owner's text; first send the text to start from (their last version, else the
+        AI draft) as a <pre> block, which Telegram copies with one tap."""
+        sid = entry["sid"]
+        preview = self._pending()["previews"].get(f"{chat}:{sid}") or {}
+        base = (preview.get("text") or _draft_text(entry)).strip()
+        self._set_preview(chat, sid, None)
+        self._set_waiting(chat, sid)
+        if not base:
+            self._send(chat, ASK_TEXT)
+            return
+        self._send(chat, ASK_EDIT)
+        self._send(chat, f"<pre>{html.escape(base[:SAFE_LIMIT], quote=False)}</pre>", parse_mode="HTML")
 
     def _cancel(self, chat: int, key: str, entry: dict) -> None:
         self._set_preview(chat, entry["sid"], None)
@@ -213,9 +240,8 @@ class CsFlow:
             self._send(chat, f"⚠️ 답변을 올리지 못했습니다: {type(exc).__name__}: {str(exc)[:200]}")
             self._show_preview(chat, entry, text, preview["source"])
             return
-        as_is = preview["source"] == SOURCE_AI and text == ((entry.get("draft") or {}).get("draft") or "").strip()
-        self._settle(key, AI_AS_IS if as_is else OWNER_WRITTEN, simulated=result.simulated,
-                     owner_answer="" if as_is else text)
+        outcome = _outcome_of(text, _draft_text(entry))
+        self._settle(key, outcome, simulated=result.simulated, owner_answer="" if outcome == AI_AS_IS else text)
         self._send(chat, SIMULATED_NOTICE if result.simulated else POSTED_NOTICE)
 
     # --- typed text -----------------------------------------------------------------------

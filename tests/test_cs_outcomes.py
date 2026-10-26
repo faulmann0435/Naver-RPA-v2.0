@@ -127,17 +127,18 @@ def test_stats_math_recent_and_all_time(tmp_path):
     from worker.cs_state import append_jsonl
     rows = [(co.AI_AS_IS, "AI답변", 1), (co.AI_AS_IS, "AI답변", 2), (co.AI_AS_IS, "사람에게", 3),
             (co.OWNER_WRITTEN, "AI답변", 1), (co.SELLER_CENTER, "사람에게", 0),
-            (co.ANSWERED_ELSEWHERE, "AI답변", 1), (co.AI_AS_IS, "AI답변", 20)]
+            (co.ANSWERED_ELSEWHERE, "AI답변", 1), (co.AI_AS_IS, "AI답변", 20), (co.OWNER_EDITED, "AI답변", 2)]
     for i, (kind, route, days) in enumerate(rows):
         entry = {**ENTRY, "draft": {**ENTRY["draft"], "route": route}}
         append_jsonl(tmp_path, OUTCOMES_FILE, co.build_outcome(f"qna:{i}", entry, kind, NOW - timedelta(days=days)))
     text = co.stats_text(tmp_path, NOW)
     recent, overall = text.split("\n\n")[1], text.split("\n\n")[2]
-    assert "총 6건" in recent and "✅ AI 그대로 3건 (60%)" in recent      # 3 of 5 choices
-    assert "✍️ 직접 씀 1건 (20%)" in recent and "🙋 판매자센터 1건 (20%)" in recent
+    assert "총 7건" in recent and "✅ AI 그대로 3건 (50%)" in recent      # 3 of 6 choices
+    assert "✏️ 고쳐서 올림 1건 (17%)" in recent
+    assert "✍️ 직접 씀 1건 (17%)" in recent and "🙋 판매자센터 1건 (17%)" in recent
     assert "따로 답함 1건" in recent
-    assert "AI답변 분류 3건 중 ✅ 2건 (67%)" in recent and "사람에게 분류 2건 중 ✅ 1건 (50%)" in recent
-    assert "총 7건" in overall and "✅ AI 그대로 4건 (67%)" in overall  # 4 of 6 choices
+    assert "AI답변 분류 4건 중 ✅ 2건 (50%)" in recent and "사람에게 분류 2건 중 ✅ 1건 (50%)" in recent
+    assert "총 8건" in overall and "✅ AI 그대로 4건 (57%)" in overall  # 4 of 7 choices
     assert text.rstrip().endswith("AI 그대로 비율이 충분히 높아지면 자동 등록을 검토할 수 있습니다.")
 
 

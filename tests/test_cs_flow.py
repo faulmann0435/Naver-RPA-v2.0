@@ -115,7 +115,7 @@ def test_alert_keyboard_per_route_and_draft():
     no_text = alert_keyboard(SID, DraftResult("기타", "사람에게", "r", "  "))
     none = alert_keyboard(SID, None)
     labels = lambda kb: [b["text"] for row in kb["inline_keyboard"] for b in row]
-    assert labels(ai) == labels(human) == ["✅ 이대로 올리기", "✍️ 직접 쓰기", "🙋 판매자센터에서 할게요"]
+    assert labels(ai) == labels(human) == ["✅ 이대로 올리기", "✏️ 초안 고쳐서 올리기", "🙋 판매자센터에서 할게요"]
     assert labels(no_text) == labels(none) == ["✍️ 직접 쓰기", "🙋 판매자센터에서 할게요"]
     for kb in (ai, human, none):
         for row in kb["inline_keyboard"]:
@@ -126,7 +126,7 @@ def test_alert_keyboard_per_route_and_draft():
 def test_preview_keyboard_has_rewrite_only_for_owner_text():
     labels = lambda kb: [b["text"] for row in kb["inline_keyboard"] for b in row]
     assert labels(preview_keyboard(SID, "abc123", rewrite=False)) == ["올리기", "취소"]
-    assert labels(preview_keyboard(SID, "abc123", rewrite=True)) == ["올리기", "✍️ 다시 쓰기", "취소"]
+    assert labels(preview_keyboard(SID, "abc123", rewrite=True)) == ["올리기", "✏️ 다시 고치기", "취소"]
     data = preview_keyboard(SID, fingerprint("x"), rewrite=True)["inline_keyboard"][0][0]["callback_data"]
     assert len(data.encode()) <= 64
 
@@ -212,27 +212,50 @@ def test_stale_fingerprint_cannot_post_a_newer_text(env):
     assert env.poster.calls == [] and env.tg.texts()[-1] == cs_flow.EXPIRED
 
 
-# --- ✍️ write your own --------------------------------------------------------------------------
+# --- ✏️ edit the draft / ✍️ write your own -----------------------------------------------------
 
-def test_write_then_text_then_preview_then_post(env):
+def sent_blocks(env):
+    """Texts sent as a tap-to-copy block (HTML <pre>)."""
+    return [p["text"] for m, p in env.tg.sent if m == "sendMessage" and p.get("parse_mode") == "HTML"]
+
+
+def test_edit_sends_the_draft_to_copy_then_posts_the_edited_text(env):
     press(env, f"cs:wr:{SID}")
-    assert env.tg.texts()[-1] == "답변을 입력해 주세요 (취소하려면 /취소)"
-    say(env, "직접 쓴 답변입니다")
-    assert env.tg.texts()[-1].startswith("이렇게 올릴까요?") and "직접 쓴 답변입니다" in env.tg.texts()[-1]
+    texts = env.tg.texts()
+    assert texts[-2] == cs_flow.ASK_EDIT and sent_blocks(env) == [f"<pre>{DRAFT}</pre>"]
+    edited = DRAFT.replace("내일", "모레")
+    say(env, edited)
+    assert env.tg.texts()[-1].startswith("이렇게 올릴까요?") and edited in env.tg.texts()[-1]
     assert any(d.startswith(f"cs:rw:{SID}") for d in last_buttons(env))
     press(env, post_button(env))
-    assert env.poster.calls == [("5", "직접 쓴 답변입니다")]
+    assert env.poster.calls == [("5", edited)]
     (o,) = outcomes(env)
-    assert (o["outcome"], o["owner_answer"], o["ai_draft"]) == ("owner_written", "직접 쓴 답변입니다", DRAFT)
+    assert (o["outcome"], o["owner_answer"], o["ai_draft"]) == ("owner_edited", edited, DRAFT)
     say(env, "그냥 말")  # waiting is over: normal help reply, no new preview
     assert "발주 처리" in env.tg.texts()[-1]
 
 
-def test_owner_typing_the_draft_text_is_still_owner_written(env):
+def test_sending_the_draft_back_unchanged_counts_as_ai_as_is(env):
     press(env, f"cs:wr:{SID}")
-    say(env, DRAFT)
+    say(env, f"  {DRAFT}\n")
+    press(env, post_button(env))
+    (o,) = outcomes(env)
+    assert (o["outcome"], o["owner_answer"]) == ("ai_as_is", "")
+
+
+def test_without_a_draft_write_asks_for_a_text_and_records_owner_written(env):
+    save_state(env.dir, {KEY: entry(draft=None)})
+    press(env, f"cs:wr:{SID}")
+    assert env.tg.texts()[-1] == "답변을 입력해 주세요 (취소하려면 /취소)" and sent_blocks(env) == []
+    say(env, "직접 쓴 답변입니다")
     press(env, post_button(env))
     assert outcomes(env)[0]["outcome"] == "owner_written"
+
+
+def test_draft_block_escapes_html(env):
+    save_state(env.dir, {KEY: entry(draft="1kg <2마리> & 소스")})
+    press(env, f"cs:wr:{SID}")
+    assert sent_blocks(env) == ["<pre>1kg &lt;2마리&gt; &amp; 소스</pre>"]
 
 
 def test_reply_to_the_alert_works_without_pressing_write(env):
@@ -247,12 +270,12 @@ def test_reply_to_some_other_message_is_a_normal_message(env):
     assert "발주 처리" in env.tg.texts()[-1] and env.poster.calls == []
 
 
-def test_rewrite_button_waits_again(env):
+def test_rewrite_button_sends_the_last_version_and_waits_again(env):
     press(env, f"cs:wr:{SID}")
     say(env, "첫 번째")
     old = post_button(env)
     press(env, f"cs:rw:{SID}")
-    assert env.tg.texts()[-1].startswith("답변을 입력해 주세요")
+    assert sent_blocks(env)[-1] == "<pre>첫 번째</pre>"
     say(env, "두 번째")
     new = post_button(env)
     press(env, old)  # the first preview is gone

@@ -1,6 +1,7 @@
 """How each customer question ended, and the 📊 CS 성적 numbers made from that.
 
-Outcomes: ai_as_is (AI draft posted unchanged), owner_written (the owner's own text posted),
+Outcomes: ai_as_is (AI draft posted unchanged), owner_edited (the AI draft posted after the owner
+changed it), owner_written (the owner's own text posted where there was no AI draft),
 seller_center (the owner chose to answer there), answered_elsewhere (answered in the seller center
 without any choice in Telegram). Every outcome goes to outcomes.jsonl in the CS state dir (local,
 unmasked) and, masked, to cs/outcomes.json in the data repository. Like worker.dispatch_log, the
@@ -19,7 +20,7 @@ from store.base import Author, ConflictError, DataStore
 from worker.cs_drafter import ROUTE_AI, ROUTE_HUMAN, mask_question
 from worker.cs_state import OUTCOMES_FILE, append_jsonl, read_jsonl, short_id
 
-AI_AS_IS, OWNER_WRITTEN = "ai_as_is", "owner_written"
+AI_AS_IS, OWNER_EDITED, OWNER_WRITTEN = "ai_as_is", "owner_edited", "owner_written"
 SELLER_CENTER, ANSWERED_ELSEWHERE = "seller_center", "answered_elsewhere"
 OUTCOMES_PATH = "cs/outcomes.json"
 OUTBOX_FILE = "outcomes_미전송.json"
@@ -141,6 +142,7 @@ def _section(title: str, outcomes: list[dict]) -> str:
     n = len(choices)
     lines = [f"{title}: 총 {len(outcomes)}건",
              f"✅ AI 그대로 {_count(choices, AI_AS_IS)}건 ({_pct(_count(choices, AI_AS_IS), n)})"
+             f" · ✏️ 고쳐서 올림 {_count(choices, OWNER_EDITED)}건 ({_pct(_count(choices, OWNER_EDITED), n)})"
              f" · ✍️ 직접 씀 {_count(choices, OWNER_WRITTEN)}건 ({_pct(_count(choices, OWNER_WRITTEN), n)})"
              f" · 🙋 판매자센터 {_count(choices, SELLER_CENTER)}건 ({_pct(_count(choices, SELLER_CENTER), n)})"]
     elsewhere = _count(outcomes, ANSWERED_ELSEWHERE)

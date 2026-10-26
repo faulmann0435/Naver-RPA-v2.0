@@ -48,6 +48,7 @@ from worker.cs_hours import is_work_time, load_schedule
 from worker.cs_outcomes import (
     AI_AS_IS,
     ANSWERED_ELSEWHERE,
+    OWNER_EDITED,
     OWNER_WRITTEN,
     build_outcome,
     flush_outbox,
@@ -189,7 +190,7 @@ def _pair(item: Item, entry: dict, now: datetime) -> dict:
 
 def _posted_by_bot(entry: dict) -> bool:
     """The answer on Naver is the one the bot posted (a pair would only repeat it)."""
-    return entry.get("outcome") in (AI_AS_IS, OWNER_WRITTEN) and not entry.get("outcome_simulated")
+    return entry.get("outcome") in (AI_AS_IS, OWNER_EDITED, OWNER_WRITTEN) and not entry.get("outcome_simulated")
 
 
 def _settle_elsewhere(state_dir: Path, store: DataStore | None, item: Item, entry: dict, now: datetime) -> dict:

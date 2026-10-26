@@ -74,15 +74,18 @@ def _button(text: str, action: str, sid: str, extra: str = "") -> dict:
 
 
 def alert_keyboard(sid: str, draft: DraftResult | None) -> dict:
-    """Inline buttons of an alert: [✅ 이대로 올리기] only when there is a draft text to post."""
-    row = [_button("✍️ 직접 쓰기", ACT_WRITE, sid), _button("🙋 판매자센터에서 할게요", ACT_SELLER, sid)]
+    """Inline buttons of an alert: with a draft text [✅ 이대로 올리기] [✏️ 초안 고쳐서 올리기],
+    without one [✍️ 직접 쓰기]; [🙋 판매자센터에서 할게요] always."""
+    seller = _button("🙋 판매자센터에서 할게요", ACT_SELLER, sid)
     if draft is not None and draft.draft.strip():
-        row.insert(0, _button("✅ 이대로 올리기", ACT_AI, sid))
+        row = [_button("✅ 이대로 올리기", ACT_AI, sid), _button("✏️ 초안 고쳐서 올리기", ACT_WRITE, sid), seller]
+    else:
+        row = [_button("✍️ 직접 쓰기", ACT_WRITE, sid), seller]
     return {"inline_keyboard": [[b] for b in row]}
 
 
 def preview_keyboard(sid: str, fingerprint: str, *, rewrite: bool) -> dict:
-    """Buttons under "이 답변을 올릴까요?": [올리기] plus [다시 쓰기] for the owner's own text, and [취소]."""
-    second = [_button("✍️ 다시 쓰기", ACT_REWRITE, sid)] if rewrite else []
+    """Buttons under "이 답변을 올릴까요?": [올리기] plus [다시 고치기] for the owner's own text, and [취소]."""
+    second = [_button("✏️ 다시 고치기", ACT_REWRITE, sid)] if rewrite else []
     row = [_button("올리기", ACT_POST, sid, fingerprint), *second, _button("취소", ACT_CANCEL, sid)]
     return {"inline_keyboard": [row]}
