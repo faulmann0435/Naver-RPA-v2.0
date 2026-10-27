@@ -148,6 +148,12 @@ def is_shippable(item: Mapping) -> bool:
     return product_order.get("productOrderStatus") == SHIPPABLE_STATUS and _blank(product_order.get("claimType"))
 
 
+def has_address(item: Mapping) -> bool:
+    """False while a 선물하기 receiver has not entered the delivery address yet."""
+    shipping = (item.get("productOrder") or {}).get("shippingAddress") or {}
+    return not _blank(shipping.get("baseAddress"))
+
+
 def split_shippable(items: Iterable[Mapping]) -> tuple[list[Mapping], list[Mapping]]:
     """(orders to put on purchase orders, orders left out because of their status or a claim)."""
     listed = list(items)

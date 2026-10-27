@@ -49,7 +49,7 @@ def test_shipped_and_cancelled_orders_are_not_counted_as_claims(tmp_path, monkey
         return {"order": {"orderId": "9"}, "productOrder": {
             "productOrderId": i, "productOrderStatus": status, "claimType": claim, "productName": "초벌장어",
             "productOption": "b", "quantity": 1, "packageNumber": "7", "productId": "5",
-            "shippingAddress": {"zipCode": "12345", "name": "홍길동"}}}
+            "shippingAddress": {"zipCode": "12345", "name": "홍길동", "baseAddress": "서울시 중구"}}}
 
     monkeypatch.setattr(order_run, "process_orders",
                         lambda *a, **k: type("R", (), {"files": [], "stats": {}, "unmatched": []})())
@@ -63,7 +63,7 @@ def _po(i, place="OK"):
     return {"order": {"orderId": "9"}, "productOrder": {
         "productOrderId": i, "productOrderStatus": "PAYED", "placeOrderStatus": place, "productName": "초벌장어",
         "productOption": "b", "quantity": 1, "packageNumber": "7", "productId": "5",
-        "shippingAddress": {"zipCode": "12345", "name": "홍길동"}}}
+        "shippingAddress": {"zipCode": "12345", "name": "홍길동", "baseAddress": "서울시 중구"}}}
 
 
 def test_naver_counts_split_like_the_seller_center_and_include_shared_orders(tmp_path, monkeypatch):
@@ -77,6 +77,29 @@ def test_naver_counts_split_like_the_seller_center_and_include_shared_orders(tmp
     assert (run.paid, run.new_orders, run.waiting_orders) == (2, 1, 2)  # ledger order 1 still counted
     text = order_run.summary(run)
     assert "네이버 발송 전 주문 3건 = 신규주문 1 + 발송대기 2" in text and "이번 발주서에 넣은 주문 2건" in text
+
+
+def test_gift_order_without_address_waits_and_never_enters_the_ledger(tmp_path, monkeypatch):
+    # 선물하기: paid, but the receiver has not entered an address yet -> a blank line on the 발주서
+    monkeypatch.setattr(order_run, "process_orders",
+                        lambda *a, **k: type("R", (), {"files": [], "stats": {}, "unmatched": []})())
+    engine = lambda: type("E", (), {"config": None, "dictionary": None, "settings": None, "source": "t"})()
+    gift = {**_po("2", "NOT_YET"), "order": {"orderId": "9", "ordererName": "김선물"}}
+    gift["productOrder"] = {**gift["productOrder"], "shippingAddress": {}}
+    for include_shared in (False, True):
+        run = order_run.run_orders(fetch=lambda: [_po("1"), gift], engine_loader=engine,
+                                   ledger=tmp_path / "l.json", include_shared=include_shared)
+        assert run.product_order_ids == ("1",) and run.paid == 1
+        assert run.address_waiting_names == ("김선물님 선물(초벌장어)",)
+        assert (run.new_orders, run.waiting_orders) == (1, 1)  # still counted like the seller center
+    text = order_run.summary(run)
+    assert "🎁 배송지 입력 대기 1건 제외: 김선물님 선물(초벌장어)" in text
+
+
+def test_address_waiting_line_also_shows_when_nothing_is_new():
+    text = order_run.summary(_result(paid=0, product_order_ids=(), address_waiting_names=("김선물님 선물(장어)",)))
+    assert text.startswith("📭") and "🎁 배송지 입력 대기 1건 제외" in text
+    assert "배송지 입력 대기" not in order_run.summary(_result())
 
 
 def _result(**kw):

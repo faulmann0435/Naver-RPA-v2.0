@@ -108,7 +108,7 @@ def _paid(i, name="홍길동"):
     return {"order": {"orderId": "9"}, "productOrder": {
         "productOrderId": i, "productOrderStatus": "PAYED", "productName": "초벌장어 2kg", "productOption": "b",
         "quantity": 1, "packageNumber": "7", "productId": "5",
-        "shippingAddress": {"zipCode": "12345", "name": name}}}
+        "shippingAddress": {"zipCode": "12345", "name": name, "baseAddress": "서울시 중구"}}}
 
 
 def _engine():

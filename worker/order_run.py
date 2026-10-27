@@ -28,6 +28,7 @@ from worker.naver_adapter import (
     KST,
     SHIPPABLE_STATUS,
     details_to_dataframe,
+    has_address,
     split_shippable,
 )
 from worker.naver_client import (
@@ -74,6 +75,9 @@ class RunResult:
     # every unshipped paid order Naver has, ledger or not, split like the seller center's screen
     new_orders: int = 0  # 신규주문: 발주확인 not done yet
     waiting_orders: int = 0  # 발송대기: 발주확인 done
+    # paid 선물하기 orders whose receiver has not entered an address: left out and kept off the ledger,
+    # so they come back on their own once the address is in
+    address_waiting_names: tuple[str, ...] = ()
 
 
 def load_engine(secrets_file: Path = SECRETS_FILE) -> Engine:
@@ -131,6 +135,12 @@ def _recipient(item: Mapping) -> str:
     return f"{name}({str(product_order.get('productName', ''))[:12]})"
 
 
+def _gift_label(item: Mapping) -> str:
+    """'orderer님 선물(product…)': the receiver's name is not known yet."""
+    orderer = (item.get("order") or {}).get("ordererName") or "이름 없음"
+    return f"{orderer}님 선물({str(item['productOrder'].get('productName', ''))[:12]})"
+
+
 def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
                engine_loader: Callable[[], Engine] = load_engine,
                ledger: Path = LEDGER_FILE, include_shared: bool = False) -> RunResult:
@@ -143,7 +153,9 @@ def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
     is_shared = lambda i: str(i["productOrder"]["productOrderId"]) in shared
     in_ledger = [i for i in shippable if is_shared(i)]
     confirmed = sum(1 for i in shippable if i["productOrder"].get("placeOrderStatus") == PLACE_ORDER_DONE)
-    todo = shippable if include_shared else [i for i in shippable if not is_shared(i)]
+    no_address = [i for i in shippable if not has_address(i)]
+    ready = [i for i in shippable if has_address(i)]
+    todo = ready if include_shared else [i for i in ready if not is_shared(i)]
     engine = engine_loader()
     result: ProcessResult | None = None
     if todo:
@@ -162,6 +174,7 @@ def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
         include_shared=include_shared,
         new_orders=len(shippable) - confirmed,
         waiting_orders=confirmed,
+        address_waiting_names=tuple(_gift_label(i) for i in no_address),
     )
 
 
@@ -191,16 +204,23 @@ def _naver_line(run: RunResult) -> str:
     return f"· 네이버 발송 전 주문 {total}건 = 신규주문 {run.new_orders} + 발송대기 {run.waiting_orders}"
 
 
+def _address_waiting_lines(run: RunResult) -> list[str]:
+    names = run.address_waiting_names
+    return [f"· 🎁 배송지 입력 대기 {len(names)}건 제외: {_names(names)}"] if names else []
+
+
 def summary(run: RunResult) -> str:
     """The message that goes with the files."""
     if not run.paid:
-        return f"📭 새로 발주할 주문이 없습니다 ({run.when:%m/%d %H:%M})\n{_naver_line(run)}\n{_shared_line(run)}"
+        return "\n".join([f"📭 새로 발주할 주문이 없습니다 ({run.when:%m/%d %H:%M})", _naver_line(run),
+                          _shared_line(run), *_address_waiting_lines(run)])
     lines = [
         f"📦 발주서 {len(run.files)}개 ({run.when:%m/%d %H:%M})",
         _naver_line(run),
         f"· 이번 발주서에 넣은 주문 {run.paid}건",
         f"· 취소·반품·교환 요청으로 뺀 주문 {run.left_out_claims}건",
         _shared_line(run),
+        *_address_waiting_lines(run),
     ]
     if run.unmatched:
         lines.append(f"· ⚠️ 미등록 품목 {run.unmatched}건 → v15 앱에서 등록한 뒤 다시 [발주 처리]를 눌러 주세요.")
