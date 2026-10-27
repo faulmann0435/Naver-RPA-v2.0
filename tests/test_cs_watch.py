@@ -149,6 +149,26 @@ def test_draft_gets_the_cycle_time_as_answer_time(world, opts):
     assert "답변 작성 시각: 2026-10-10(토) 12:00" in client.calls[0]["messages"][0]["content"]
 
 
+def test_owner_past_answers_reach_the_draft_prompt(world, opts):
+    opts.state_dir.mkdir(parents=True)
+    record = {"outcome": "owner_edited", "settled_at": "2026-10-09T10:00:00+09:00", "product_name": "국산 풍천 장어",
+              "question": "냉장 며칠 가요?", "owner_answer": "냉장 1일, 이후 냉동 보관해 주세요^^"}
+    (opts.state_dir / "outcomes.jsonl").write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+    world.qnas = [question("a")]
+    client = FakeClient(reply())
+    cycle(opts, client=client)
+    content = client.calls[0]["messages"][0]["content"]
+    assert content.startswith("[사장님 최근 답변 예시]") and "사장님: 냉장 1일, 이후 냉동 보관해 주세요^^" in content
+    assert content.index("[이번 문의]") < content.index("문의 내용: 언제 와요?")
+
+
+def test_without_past_answers_the_prompt_is_unchanged(world, opts):
+    world.qnas = [question("a")]
+    client = FakeClient(reply())
+    cycle(opts, client=client)
+    assert client.calls[0]["messages"][0]["content"].startswith("채널: 상품문의")
+
+
 def test_new_question_is_alerted_only_once(world, opts):
     world.qnas = [question("a")]
     cycle(opts)

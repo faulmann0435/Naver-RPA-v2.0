@@ -44,6 +44,7 @@ from worker.cs_drafter import (
     model_name,
 )
 from worker.cs_drafter import draft as make_draft
+from worker.cs_examples import examples_text, load_examples, pick_examples
 from worker.cs_hours import is_work_time, load_schedule
 from worker.cs_outcomes import (
     AI_AS_IS,
@@ -183,7 +184,7 @@ def _entry(item: Item, now: datetime, *, draft: DraftResult | None = None, alert
 def _pair(item: Item, entry: dict, now: datetime) -> dict:
     draft = entry.get("draft") or {}
     return {"key": item.key, "channel": item.channel, "created": item.created_text,
-            "question": item.question, "order_kind": entry.get("order_kind", ""),
+            "product_name": item.product_name, "question": item.question, "order_kind": entry.get("order_kind", ""),
             "route": draft.get("route"), "kind": draft.get("kind"), "draft": draft.get("draft"),
             "owner_answer": item.owner_answer, "answered_seen_at": now.isoformat()}
 
@@ -225,12 +226,12 @@ def _describe(channel: str, created: datetime) -> str:
 
 
 def _ai_draft(client: Any, doc: str, model: str, view: InquiryView,
-              off_note: str = NO_AI_NOTE) -> tuple[DraftResult | None, str]:
+              off_note: str = NO_AI_NOTE, examples: str = "") -> tuple[DraftResult | None, str]:
     """(draft, note): the note replaces the draft section of the alert when there is no draft."""
     if client is None:
         return None, off_note
     try:
-        return make_draft(client, doc, view, model), NO_AI_NOTE
+        return make_draft(client, doc, view, model, examples), NO_AI_NOTE
     except DraftError as err:
         log.warning("AI 초안 실패 %s: %s", _describe(view.channel, view.created), err)
         return None, f"(AI 초안 실패: {trim(str(err), REASON_MAX)})"
@@ -307,11 +308,13 @@ def run_cycle(opts: Options, client: Any, doc: str, model: str, now: datetime | 
 
     tg, chats = target or _telegram_target(opts)
     details = _fetch_order_details(token, pending, now)
+    history = load_examples(opts.state_dir) if client is not None else []
     alerted = failed = 0
     for item in pending:
         link = link_item(item, details)
         view = InquiryView(item.channel, item.created, item.product_name, item.question, link, answer_at=now)
-        result, note = _ai_draft(client, doc, model, view, ai_off_note)
+        examples = examples_text(pick_examples(history, item.product_name))
+        result, note = _ai_draft(client, doc, model, view, ai_off_note, examples)
         text = format_alert(view, link, result, note)
         if opts.dry_run:
             print(text + "\n" + "-" * 30)

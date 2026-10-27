@@ -151,8 +151,9 @@ def stamp_with_weekday(moment: datetime) -> str:
     return f"{local:%Y-%m-%d}({WEEKDAYS[local.weekday()]}) {local:%H:%M}"
 
 
-def build_messages(doc: str, view: InquiryView) -> dict[str, Any]:
-    """`system` (rules + cached document) and `messages` for the Messages API."""
+def build_messages(doc: str, view: InquiryView, examples: str = "") -> dict[str, Any]:
+    """`system` (rules + cached document) and `messages` for the Messages API; `examples` (the owner's
+    past answers, worker.cs_examples) goes before the question, outside the cached part."""
     system = [
         {"type": "text", "text": RULES},
         {"type": "text", "text": f"[가게 정보 문서]\n{doc}", "cache_control": {"type": "ephemeral"}},
@@ -167,7 +168,8 @@ def build_messages(doc: str, view: InquiryView) -> dict[str, Any]:
         "",
         to_prompt_text(view.link),
     ])
-    return {"system": system, "messages": [{"role": "user", "content": user}]}
+    content = f"{examples}\n\n[이번 문의]\n{user}" if examples else user
+    return {"system": system, "messages": [{"role": "user", "content": content}]}
 
 
 def parse_reply(text: str) -> DraftResult:
@@ -186,12 +188,12 @@ def parse_reply(text: str) -> DraftResult:
     return DraftResult(kind, route, reason, text)
 
 
-def draft(client: Any, doc: str, view: InquiryView, model: str) -> DraftResult:
+def draft(client: Any, doc: str, view: InquiryView, model: str, examples: str = "") -> DraftResult:
     """Ask Claude for a draft. `client` only needs the anthropic `messages.create` shape."""
     try:
         reply = client.messages.create(model=model, max_tokens=MAX_TOKENS,
                                        output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
-                                       **build_messages(doc, view))
+                                       **build_messages(doc, view, examples))
     except Exception as err:  # SDK errors (auth, rate limit, network) all mean: no draft this time
         raise DraftError(f"AI 초안 요청에 실패했습니다: {type(err).__name__}") from err
     if getattr(reply, "stop_reason", None) == "max_tokens":
