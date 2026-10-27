@@ -11,7 +11,7 @@ from worker.order_link import LinkResult, link_customer_inquiry, link_qna
 
 ASKED = datetime(2026, 10, 10, 9, 5, tzinfo=KST)
 AI = DraftResult("배송 일정", "AI답변", "문서에 있음", "안녕하세요 고객님^^ 내일 도착합니다.")
-HUMAN = DraftResult("취소·변경", "사람에게", "주소 변경 요청", "확인 후 안내드리겠습니다")
+HUMAN = DraftResult("취소·변경", "사람에게", "주소 변경 요청", "주소 변경은 판매자센터에서 도와드립니다.")
 
 
 def make(channel="상품문의", question="언제 와요?", name="국산 풍천 장어", link=None):

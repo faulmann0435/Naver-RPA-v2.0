@@ -39,6 +39,11 @@ WEEKDAYS = "월화수목금토일"
 
 PHONE = re.compile(r"(?<![\d/])0\d{1,2}[-. ]?\d{3,4}[-. ]?\d{4}(?!\d)")
 LONG_DIGITS = re.compile(r"(?<!\d)(?<!products/)\d{10,}")  # product links keep their number
+# "확인 후 안내드리겠습니다" and the like: a posted answer cannot be followed up, so the owner must fix these
+FOLLOW_UP = re.compile(
+    r"(확인|파악|알아보|체크)[^.!?\n]{0,15}(안내|연락|알려|답변|말씀)\s*드[리릴]"
+    r"|(다시|추후|나중에|따로|별도로?)\s*(안내|연락|알려|답변|말씀)\s*드[리릴]")
+FOLLOW_UP_WARNING = "⚠️ '다시 안내' 약속 문구가 있어 그대로 올리면 안 됩니다 — 고쳐서 올려 주세요."
 
 RULES = """당신은 수산물 스마트스토어 '최고다농수산'의 고객 문의에 대한 답변 '초안'을 쓰는 도우미입니다.
 초안은 사장님만 보고, 사장님이 고쳐서 직접 답합니다. 아래 규칙을 반드시 지킵니다.
@@ -53,8 +58,10 @@ RULES = """당신은 수산물 스마트스토어 '최고다농수산'의 고객
 6. 말투는 문서 §5를 따르세요. 묻지 않은 것은 덧붙이지 말고, 추가 구매를 권하지 마세요.
 7. 고객 이름·전화번호·주소·주문번호를 답변에 쓰지 마세요.
 8. 문서의 링크는 한 글자도 바꾸지 말고 그대로 쓰세요.
-9. route가 "사람에게"여도 draft에는 사장님이 참고할 수 있는 초안을 쓰되, 확정할 수 없는 부분은 "확인 후 안내드리겠습니다"로 두세요.
-   초안을 쓸 수 없으면 draft는 빈 문자열로 두세요.
+9. 답변을 단 뒤에는 고객에게 다시 알릴 방법이 없습니다. "확인 후 안내드리겠습니다", "알려드리겠습니다",
+   "연락드리겠습니다"처럼 나중에 다시 안내·연락하겠다는 약속은 어떤 경우에도 쓰지 마세요.
+   확정할 수 없는 부분이 있으면 route를 "사람에게"로 하고, draft에는 문서로 확실히 말할 수 있는 부분만 쓰세요.
+   무엇을 확인해야 하는지는 reason에 적으세요. 초안을 쓸 수 없으면 draft는 빈 문자열로 두세요.
 
 출력은 JSON 하나입니다.
 - kind: 문의 종류 (배송 일정 / 상품 정보 / 보관·조리 / 취소·변경 / 불만·클레임 / 기타)
@@ -173,7 +180,10 @@ def parse_reply(text: str) -> DraftResult:
         raise DraftError("AI 응답 형식이 올바르지 않습니다.")
     kind = data.get("kind") if data.get("kind") in KINDS else "기타"
     route = data.get("route") if data.get("route") in ROUTES else ROUTE_HUMAN
-    return DraftResult(kind, route, str(data.get("reason") or ""), str(data.get("draft") or ""))
+    reason, text = str(data.get("reason") or ""), str(data.get("draft") or "")
+    if FOLLOW_UP.search(text):
+        route, reason = ROUTE_HUMAN, f"{FOLLOW_UP_WARNING} {reason}".strip()
+    return DraftResult(kind, route, reason, text)
 
 
 def draft(client: Any, doc: str, view: InquiryView, model: str) -> DraftResult:

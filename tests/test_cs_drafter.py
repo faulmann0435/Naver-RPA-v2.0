@@ -123,6 +123,27 @@ def test_parse_bad_route_falls_back_to_human_and_bad_kind_to_other():
     assert result.route == "사람에게" and result.kind == "기타"
 
 
+def test_rules_forbid_promising_to_get_back_to_the_customer():
+    rules = build_messages(DOC, view())["system"][0]["text"]
+    assert "다시 알릴 방법이 없" in rules and '"확인 후 안내드리겠습니다"로 두세요' not in rules
+
+
+@pytest.mark.parametrize("draft", [
+    "재고 확인 후 안내드리겠습니다.", "현장에 확인해서 연락드리겠습니다^^", "추후 다시 안내 드리겠습니다.",
+    "확인되는 대로 알려드리겠습니다.", "따로 연락드릴게요", "파악 후 답변드리겠습니다.",
+])
+def test_draft_promising_a_follow_up_goes_to_the_owner_with_a_warning(draft):
+    result = parse_reply(reply(draft=draft))
+    assert result.route == "사람에게" and result.reason.startswith("⚠️ '다시 안내' 약속 문구")
+    assert result.draft == draft  # kept for the owner to edit
+
+
+@pytest.mark.parametrize("draft", ["아래와 같이 안내드리겠습니다. 오후 3시 전 주문은 당일 출고됩니다.",
+                                   "수령 후 바로 냉장 보관해 주세요."])
+def test_ordinary_answers_are_not_flagged(draft):
+    assert parse_reply(reply(draft=draft)).route == "AI답변"
+
+
 def test_parse_missing_draft_is_empty():
     assert parse_reply(json.dumps({"kind": "기타", "route": "사람에게"})).draft == ""
 

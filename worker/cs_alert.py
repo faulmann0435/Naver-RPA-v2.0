@@ -5,7 +5,7 @@ order ids and tracking numbers, and nothing else is read from the raw data here.
 """
 from __future__ import annotations
 
-from worker.cs_drafter import ROUTE_AI, DraftResult, InquiryView, stamp_with_weekday
+from worker.cs_drafter import FOLLOW_UP, ROUTE_AI, DraftResult, InquiryView, stamp_with_weekday
 from worker.order_link import KIND_GUESS, KIND_MANY, LinkResult, OrderSummary
 
 CS_PREFIX = "cs:"  # callback data: cs:<action>:<sid>[:<fingerprint>]
@@ -78,7 +78,9 @@ def alert_keyboard(sid: str, draft: DraftResult | None) -> dict:
     without one [✍️ 직접 쓰기]; [🙋 판매자센터에서 할게요] always."""
     seller = _button("🙋 판매자센터에서 할게요", ACT_SELLER, sid)
     if draft is not None and draft.draft.strip():
-        row = [_button("✅ 이대로 올리기", ACT_AI, sid), _button("✏️ 초안 고쳐서 올리기", ACT_WRITE, sid), seller]
+        # a draft promising to get back to the customer must be edited first: no follow-up is possible
+        as_is = [] if FOLLOW_UP.search(draft.draft) else [_button("✅ 이대로 올리기", ACT_AI, sid)]
+        row = [*as_is, _button("✏️ 초안 고쳐서 올리기", ACT_WRITE, sid), seller]
     else:
         row = [_button("✍️ 직접 쓰기", ACT_WRITE, sid), seller]
     return {"inline_keyboard": [[b] for b in row]}

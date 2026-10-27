@@ -117,6 +117,8 @@ def test_alert_keyboard_per_route_and_draft():
     labels = lambda kb: [b["text"] for row in kb["inline_keyboard"] for b in row]
     assert labels(ai) == labels(human) == ["✅ 이대로 올리기", "✏️ 초안 고쳐서 올리기", "🙋 판매자센터에서 할게요"]
     assert labels(no_text) == labels(none) == ["✍️ 직접 쓰기", "🙋 판매자센터에서 할게요"]
+    promise = alert_keyboard(SID, DraftResult("기타", "사람에게", "r", "확인 후 안내드리겠습니다."))
+    assert labels(promise) == ["✏️ 초안 고쳐서 올리기", "🙋 판매자센터에서 할게요"]  # never posted as is
     for kb in (ai, human, none):
         for row in kb["inline_keyboard"]:
             for b in row:
