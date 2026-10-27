@@ -95,7 +95,7 @@ def test_ledger_keeps_shared_orders_out_of_the_next_run(tmp_path):
     ledger = tmp_path / "ledger.json"
     item = lambda i: {"order": {"orderId": "9"}, "productOrder": {
         "productOrderId": i, "productOrderStatus": "PAYED", "productName": "a", "productOption": "b",
-        "quantity": 1, "packageNumber": "7", "productId": "5", "shippingAddress": {"zipCode": "12345"}}}
+        "quantity": 1, "packageNumber": "7", "productId": "5", "shippingAddress": {"zipCode": "12345", "baseAddress": "서울시 중구"}}}
     engine = lambda: type("E", (), {"config": None, "dictionary": None, "settings": None, "source": "t"})()
     mark_shared(("1",), ledger)
     run = run_orders(fetch=lambda: [item("1")], engine_loader=engine, ledger=ledger)

@@ -44,6 +44,8 @@ CONFIG_PASSWORD = "1111"  # protects config.xlsx sheets against accidental edits
 SECRETS_FILE = REPO_ROOT / ".streamlit" / "secrets.toml"
 LEDGER_FILE = DATA_DIR / "발주기록" / "공유완료_주문.json"
 PENDING_FILE = DATA_DIR / "발주기록" / "공유대기_발주.json"
+# Naver's status fields of the address-less orders, kept to learn how Naver marks them (no personal data)
+ADDRESS_WAITING_FILE = DATA_DIR / "발주기록" / "배송지대기_상태.json"
 LOOKBACK_DAYS = 14  # covers a long holiday; the ledger keeps the overlap from being sent twice
 ALL_LOOKBACK_DAYS = 30  # [발송 안 된 주문 전부] also reaches pre-orders paid long before shipping
 MAX_NAMES = 10  # recipients listed in the summary before "외 N건"
@@ -72,11 +74,11 @@ class RunResult:
     when: datetime = field(default_factory=lambda: datetime.now(KST))
     shared_names: tuple[str, ...] = ()  # recipients of the ledger orders (left out, or put back)
     include_shared: bool = False
-    # every unshipped paid order Naver has, ledger or not, split like the seller center's screen
+    # every unshipped paid order with an address, ledger or not, split like the seller center's screen
     new_orders: int = 0  # 신규주문: 발주확인 not done yet
     waiting_orders: int = 0  # 발송대기: 발주확인 done
-    # paid 선물하기 orders whose receiver has not entered an address: left out and kept off the ledger,
-    # so they come back on their own once the address is in
+    # paid orders with no delivery address yet (선물하기 수락대기 and the like): left out and kept off the
+    # ledger, so they come back on their own once the address is in
     address_waiting_names: tuple[str, ...] = ()
 
 
@@ -135,15 +137,40 @@ def _recipient(item: Mapping) -> str:
     return f"{name}({str(product_order.get('productName', ''))[:12]})"
 
 
-def _gift_label(item: Mapping) -> str:
-    """'orderer님 선물(product…)': the receiver's name is not known yet."""
+def _orderer_label(item: Mapping) -> str:
+    """'orderer(product…)': with no address there is no receiver name yet."""
     orderer = (item.get("order") or {}).get("ordererName") or "이름 없음"
-    return f"{orderer}님 선물({str(item['productOrder'].get('productName', ''))[:12]})"
+    return f"{orderer}({str(item['productOrder'].get('productName', ''))[:12]})"
+
+
+STATUS_KEY_HINTS = ("status", "type", "gift", "date", "class")  # field names worth keeping in the log
+
+
+def _status_fields(obj: Mapping | None) -> dict:
+    """Scalar fields whose name looks like a status or date; names, phones and addresses never match."""
+    return {k: v for k, v in (obj or {}).items()
+            if not isinstance(v, (Mapping, list)) and any(h in k.lower() for h in STATUS_KEY_HINTS)}
+
+
+def log_address_waiting(items: list[Mapping], path: Path = ADDRESS_WAITING_FILE) -> None:
+    """Keep Naver's status fields of the address-less orders (latest per order) to learn how
+    Naver marks them, e.g. a 선물하기 order the receiver has not accepted yet."""
+    if not items:
+        return
+    logged = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    seen = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    for item in items:
+        logged[str(item["productOrder"]["productOrderId"])] = {
+            "seen": seen, "order": _status_fields(item.get("order")),
+            "productOrder": _status_fields(item.get("productOrder"))}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(logged, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
                engine_loader: Callable[[], Engine] = load_engine,
-               ledger: Path = LEDGER_FILE, include_shared: bool = False) -> RunResult:
+               ledger: Path = LEDGER_FILE, include_shared: bool = False,
+               address_log: Path = ADDRESS_WAITING_FILE) -> RunResult:
     """Fetch, filter, convert and build the purchase orders. Changes nothing on the store."""
     items = fetch()
     shippable, not_shippable = split_shippable(items)
@@ -151,10 +178,12 @@ def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
     claims = [i for i in not_shippable if i["productOrder"].get("productOrderStatus") == SHIPPABLE_STATUS]
     shared = read_ledger(ledger)
     is_shared = lambda i: str(i["productOrder"]["productOrderId"]) in shared
-    in_ledger = [i for i in shippable if is_shared(i)]
-    confirmed = sum(1 for i in shippable if i["productOrder"].get("placeOrderStatus") == PLACE_ORDER_DONE)
+    # no address yet: the store's Excel export and its 신규주문/발송대기 counts leave these out too
     no_address = [i for i in shippable if not has_address(i)]
     ready = [i for i in shippable if has_address(i)]
+    log_address_waiting(no_address, address_log)
+    in_ledger = [i for i in ready if is_shared(i)]
+    confirmed = sum(1 for i in ready if i["productOrder"].get("placeOrderStatus") == PLACE_ORDER_DONE)
     todo = ready if include_shared else [i for i in ready if not is_shared(i)]
     engine = engine_loader()
     result: ProcessResult | None = None
@@ -172,9 +201,9 @@ def run_orders(fetch: Callable[[], list[dict]] = fetch_paid_items,
         source=engine.source,
         shared_names=tuple(dict.fromkeys(_recipient(i) for i in in_ledger)),
         include_shared=include_shared,
-        new_orders=len(shippable) - confirmed,
+        new_orders=len(ready) - confirmed,
         waiting_orders=confirmed,
-        address_waiting_names=tuple(_gift_label(i) for i in no_address),
+        address_waiting_names=tuple(_orderer_label(i) for i in no_address),
     )
 
 
@@ -206,7 +235,10 @@ def _naver_line(run: RunResult) -> str:
 
 def _address_waiting_lines(run: RunResult) -> list[str]:
     names = run.address_waiting_names
-    return [f"· 🎁 배송지 입력 대기 {len(names)}건 제외: {_names(names)}"] if names else []
+    if not names:
+        return []
+    return [f"· 🎁 배송지 입력 대기(선물 수락대기 등) {len(names)}건 제외: {_names(names)}",
+            "  주소가 들어오면 다음 [발주 처리]에 자동으로 들어갑니다."]
 
 
 def summary(run: RunResult) -> str:
