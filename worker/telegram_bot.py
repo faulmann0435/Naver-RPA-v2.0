@@ -14,6 +14,9 @@ numbers on Naver (worker.dispatch_client; really sent only when INVOICE_DISPATCH
 Each such registration is also written to the shared work log (dispatch/queue.json, shown on the site's
 송장 등록 기록 page) by worker.dispatch_log, after the reply; a failed log write never affects the run.
 
+자연이랑: an Excel from that portal (출고작업관리) is recognised by its columns and turned into purchase orders
+(worker.withnature_run); a later tracking file is then also matched to those orders and gives a portal upload file.
+
 고객 문의 (CS): with CS_WATCH_ENABLED=1 the bot also checks for new unanswered customer questions every
 CS_INTERVAL seconds (worker.cs_watch) and handles the buttons / typed answers under each alert
 (worker.cs_flow), in this same process so only one getUpdates poller uses the token.
@@ -35,6 +38,7 @@ from pathlib import Path
 
 import requests
 
+from core.withnature import is_withnature_export
 from store import dispatch_queue
 from store.base import DataStore
 from worker import single_instance
@@ -71,6 +75,8 @@ from worker.order_run import (
     write_pending,
 )
 from worker.paths import DATA_DIR
+from worker.withnature_run import WithnatureRun, run_withnature
+from worker.withnature_run import summary as withnature_summary
 
 API = "https://api.telegram.org/bot{token}/{method}"
 RUN_BUTTON = "📦 발주 처리"
@@ -190,6 +196,7 @@ class OrderBot:
                  invoice_preparer: Callable[[bytes], InvoiceRun] = prepare_invoices,
                  invoice_register: Callable[..., DispatchResult] = register,
                  invoice_pending_file: Path = INVOICE_PENDING_FILE,
+                 withnature_runner: Callable[[bytes], WithnatureRun] = run_withnature,
                  log_store: DataStore | None = None, log_outbox: Path = OUTBOX_FILE,
                  cs: CsFlow | None = None):
         self.tg, self.allowed, self.runner, self.mark = tg, allowed, runner, mark
@@ -197,6 +204,7 @@ class OrderBot:
         self.pending_file = pending_file  # runs awaiting [공유 완료]; a file so a restart keeps them
         self.invoice_preparer, self.invoice_register = invoice_preparer, invoice_register
         self.invoice_pending_file = invoice_pending_file  # 송장 runs awaiting a button tap
+        self.withnature_runner = withnature_runner  # 자연이랑 export -> purchase orders
         self.log_store, self.log_outbox = log_store, log_outbox  # shared work log (None: not recorded)
         self.cs = cs  # customer-question buttons and typed answers (None: CS is off)
 
@@ -235,7 +243,8 @@ class OrderBot:
         else:
             self.tg.send(chat, f"아래 [{RUN_BUTTON}] 버튼을 누르면 새 주문으로 발주서를 만듭니다.\n"
                                f"[{ALL_BUTTON}]은 전에 공유한 주문까지, 송장 안 들어간 주문을 모두 넣습니다.\n"
-                               "한진 송장 엑셀 파일을 이 대화방에 보내면 송장을 등록합니다.",
+                               "한진 송장 엑셀 파일을 이 대화방에 보내면 송장을 등록합니다.\n"
+                               "자연이랑 출고작업관리 엑셀 파일을 보내면 자연이랑 발주서를 만듭니다.",
                          reply_markup=run_keyboard())
 
     def _on_document(self, chat: int, document: dict) -> None:
@@ -244,7 +253,11 @@ class OrderBot:
             return
         self.tg.send(chat, "⏳ 송장 파일 확인 중…")
         try:
-            run = self.invoice_preparer(self.tg.download(document["file_id"]))
+            data = self.tg.download(document["file_id"])
+            if is_withnature_export(data):
+                self._on_withnature(chat, data)
+                return
+            run = self.invoice_preparer(data)
         except Exception as exc:  # report every failure to the owner instead of going silent
             log.exception("송장 확인 실패")
             self.tg.send(chat, failure_message(exc, "송장 확인"))
@@ -252,6 +265,18 @@ class OrderBot:
         for f in run.files:
             self.tg.send_file(chat, f.filename, f.data)
         self.tg.send(chat, invoice_summary(run), **self._invoice_markup(run))
+
+    def _on_withnature(self, chat: int, data: bytes) -> None:
+        """A 자연이랑 export: purchase orders only, nothing to confirm (no ledger, no Naver)."""
+        try:
+            run = self.withnature_runner(data)
+        except Exception as exc:  # report every failure to the owner instead of going silent
+            log.exception("자연이랑 발주서 실패")
+            self.tg.send(chat, failure_message(exc, "자연이랑 발주서"))
+            return
+        for f in run.files:
+            self.tg.send_file(chat, f["filename"], f["data"].getvalue())
+        self.tg.send(chat, withnature_summary(run), reply_markup=run_keyboard())
 
     def _invoice_markup(self, run: InvoiceRun) -> dict:
         matched, checks = len(run.result.matched()), len(run.result.includable_checks())
