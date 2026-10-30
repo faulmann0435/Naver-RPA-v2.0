@@ -33,3 +33,14 @@ def test_real_supplier_xls_list_is_read_with_its_couriers():
     invoices = read_invoice_file(SUPPLIER_LIST.read_bytes())
     assert len(invoices) == 66 and all(i.tracking.isdigit() for i in invoices)
     assert {i.carrier for i in invoices} == {"CJ대한통운", "우체국택배", "로젠택배"}
+
+
+BOOKING_FORM = REAL_DIR / "프리미엄 과메기 송장번호.xlsx"
+
+
+@pytest.mark.skipif(not BOOKING_FORM.exists(), reason="real booking form not present")
+def test_real_booking_form_is_read_as_hanjin_and_skips_the_stray_mark():
+    invoices = read_invoice_file(BOOKING_FORM.read_bytes())
+    assert len(invoices) == 10 and all(i.tracking.isdigit() and len(i.tracking) == 12 for i in invoices)
+    assert all(i.name and len(i.zip_code) == 5 and i.address for i in invoices)
+    assert {i.carrier for i in invoices} == {"한진택배"}

@@ -99,7 +99,7 @@ def render() -> None:
     if not HAS_MSOFFCRYPTO:
         st.warning("비밀번호 보호 엑셀: `pip install msoffcrypto-tool`")
     order_file = st.file_uploader("주문서 엑셀 (스마트스토어 발주발송관리)", type=["xlsx"], key="invoice_orders")
-    invoice_files = st.file_uploader("송장 파일 (한진 송장파일, 공급처 송장 목록, '한진택배' 칸을 채운 발주서 · 여러 개 가능)",
+    invoice_files = st.file_uploader("송장 파일 (한진 송장파일, 한진 예약양식, 공급처 송장 목록, '한진택배' 칸을 채운 발주서 · 여러 개 가능)",
                                      type=["xlsx", "xls"], accept_multiple_files=True, key="invoice_hanjin")
     password = st.text_input("주문서 엑셀 비밀번호 (없으면 비움)", type="password", key="invoice_pw")
     if order_file is None or not invoice_files:
