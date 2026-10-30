@@ -94,3 +94,21 @@ def api_item(pid: str, name: str = "홍길동", package: str | None = None, stat
                 "productId": "5", "shippingAddress": {
                     "name": name, "zipCode": "08239", "tel1": "010-0000-0001",
                     "baseAddress": "서울특별시 가나구 다라로 1 (마바동)", "detailedAddress": "101호"}}}
+
+
+BOOKING_COLUMNS = ["예약구분", "집하예정일", "보내는분성명", "보내는분전화번호", "받는분성명", "받는분전화번호",
+                   "받는분기타연락처", "받는분우편번호", "받는분주소(전체, 분할)", "운송장번호", "고객주문번호",
+                   "품목명", "박스수량"]
+
+
+def booking_row(tracking: str | None, name: str | None = "홍길동", **over) -> dict:
+    """A 한진 booking-form row a supplier sent back with the 운송장번호 filled in (zip as a number)."""
+    row = {"보내는분성명": "최고다농수산", "보내는분전화번호": "033-000-0000", "받는분성명": name,
+           "받는분전화번호": "010-0000-0001", "받는분기타연락처": None, "받는분우편번호": 8239,
+           "받는분주소(전체, 분할)": ADDRESS, "운송장번호": tracking, "품목명": "프리미엄 과메기 10미 20쪽",
+           "박스수량": 1}
+    return {**row, **over}
+
+
+def booking_xlsx(*rows: dict) -> bytes:
+    return _workbook_bytes("Sheet1", [BOOKING_COLUMNS] + [[r.get(c) for c in BOOKING_COLUMNS] for r in rows])

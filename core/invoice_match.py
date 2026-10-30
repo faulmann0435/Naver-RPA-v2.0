@@ -1,7 +1,8 @@
 """송장 매칭: match the courier's tracking-number file (한진 송장파일) to the Naver order rows.
 
 Pure functions, no I/O beyond parsing xlsx/xls bytes. Streamlit and the Telegram bot share this core.
-Three tracking-file layouts are read: the 한진 file, a purchase order a supplier sent back with a
+Four tracking-file layouts are read: the 한진 file, the 한진 booking form a supplier sent back with the
+운송장번호 filled in (받는분성명 / 받는분우편번호 ...), a purchase order a supplier sent back with a
 한진택배 column, and a supplier's shipping list (택배사 / 운송장번호 / 이름 / 연락처) that mixes couriers.
 
     read_invoice_file(bytes)   -> list[Invoice]        one per box
@@ -44,6 +45,9 @@ TEXT_COLUMNS = (COL_ID, COL_ORDER_ID, COL_ZIP, COL_BUNDLE, "상품번호", "구�
 
 HANJIN_TRACKING = "운송장번호"
 HANJIN_REQUIRED = ("받으시는 분", "받는분우편번호", "받는분총주소")
+# The 한진 booking form (예약구분 / 집하예정일 / 받는분성명 ...) a supplier sent back with the 운송장번호 column filled.
+BOOKING_NAME, BOOKING_ADDRESS = "받는분성명", "받는분주소(전체, 분할)"
+BOOKING_REQUIRED = (BOOKING_NAME, "받는분전화번호", "받는분우편번호", BOOKING_ADDRESS)
 # Courier names as suppliers write them -> (name Naver's 엑셀 일괄발송 expects, Commerce API code).
 # Codes from Naver's delivery-company list (LOGEN was merged into KGB).
 _HANJIN = (CARRIER_NAME, "HANJIN")
@@ -241,11 +245,13 @@ def read_invoice_file(data: bytes) -> list[Invoice]:
         header = [_text(c) for c in rows[tracking_at]]
         if LIST_NAME in header and LIST_CARRIER in header:
             return _read_rows(rows, tracking_at, LIST_REQUIRED, _list_invoice)
+        if BOOKING_NAME in header:
+            return _read_rows(rows, tracking_at, BOOKING_REQUIRED, _booking_invoice)
         return _read_rows(rows, tracking_at, HANJIN_REQUIRED, _hanjin_invoice)
     returned_at = _find_header(rows, RETURNED_TRACKING)
     if returned_at is not None and RETURNED_NAME in [_text(c) for c in rows[returned_at]]:
         return _read_rows(rows, returned_at, RETURNED_REQUIRED, _returned_invoice)
-    raise ValueError("송장 파일이 아닙니다. 한진 송장파일('운송장번호' 열) 또는 "
+    raise ValueError("송장 파일이 아닙니다. 한진 송장파일·한진 예약양식('운송장번호' 열) 또는 "
                      "'한진택배' 열에 송장번호를 적은 발주서를 보내 주세요.")
 
 
@@ -257,8 +263,9 @@ def _read_rows(rows: list[tuple], header_at: int, required: tuple[str, ...], mak
     invoices = []
     for line_no, row in enumerate(rows[header_at + 1:], start=header_at + 2):
         cells = dict(zip(header, row, strict=False))
-        if any(_text(v) for v in cells.values()):
-            invoices.append(make(cells, line_no))
+        invoice = make(cells, line_no) if any(_text(v) for v in cells.values()) else None
+        if invoice is not None:
+            invoices.append(invoice)
     return invoices
 
 
@@ -268,6 +275,18 @@ def _hanjin_invoice(cells: dict, line_no: int) -> Invoice:
         name=_text(cells.get("받으시는 분")), phone=_text(cells.get("받으시는 분 전화")),
         mobile=_text(cells.get("받는분핸드폰")), zip_code=norm_zip(cells.get("받는분우편번호")),
         address=_text(cells.get("받는분총주소")), item_name=_text(cells.get("품목명")))
+
+
+def _booking_invoice(cells: dict, line_no: int) -> Invoice | None:
+    """A 한진 booking-form row; a row with only a stray mark (no recipient at all) is skipped."""
+    recipient = (cells.get(BOOKING_NAME), cells.get("받는분전화번호"), cells.get(BOOKING_ADDRESS))
+    if not any(_text(v) for v in recipient):
+        return None
+    return Invoice(
+        seq=str(line_no), tracking=norm_tracking(cells.get(HANJIN_TRACKING)), name=_text(cells.get(BOOKING_NAME)),
+        phone=_text(cells.get("받는분전화번호")), mobile=_text(cells.get("받는분기타연락처")),
+        zip_code=norm_zip(cells.get("받는분우편번호")), address=_text(cells.get(BOOKING_ADDRESS)),
+        item_name=_text(cells.get("품목명")))
 
 
 def _returned_invoice(cells: dict, line_no: int) -> Invoice:

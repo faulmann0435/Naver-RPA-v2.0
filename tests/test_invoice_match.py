@@ -16,6 +16,7 @@ from core.invoice_match import (
 )
 from tests.invoice_helpers import (
     ADDRESS,
+    booking_row,
     hanjin_row,
     hanjin_xlsx,
     order_export_xlsx,
@@ -259,3 +260,36 @@ def test_two_identical_boxes_for_one_order_stay_unresolved():
                                                         list_row("222", 품목및수량="일품 박달홍게 4kg x 1"))))
     (a,) = result.assignments
     assert not a.includable and a.reason == "송장 여러 개"
+
+
+def _booking(order_rows, booking_rows):
+    from tests.invoice_helpers import booking_xlsx
+    return match_invoices(normalize_orders(orders(*order_rows)), read_invoice_file(booking_xlsx(*booking_rows)))
+
+
+def test_booking_form_matches_on_name_and_zip_as_hanjin():
+    result = _booking([order_row("1"), order_row("2", "김철수", 수취인연락처1="010-0000-0002")],
+                      [booking_row("4636-0000-0001"), booking_row("4636-0000-0002", "김철수", 받는분전화번호="010-0000-0002")])
+    assert {(a.tracking, a.carrier) for a in result.matched()} == {("463600000001", "한진택배"),
+                                                                     ("463600000002", "한진택배")}
+
+
+def test_booking_form_safe_number_in_other_contact_matches():
+    result = _booking([order_row("1", 수취인연락처2="0502-0000-0009")],
+                      [booking_row("111", 받는분전화번호="0502-0000-0009", 받는분기타연락처="010-1111-2222")])
+    assert len(result.matched()) == 1
+
+
+def test_booking_form_skips_stray_marks_and_reports_missing_tracking():
+    result = _booking([order_row("1")], [booking_row("111"), booking_row(None, "김철수"),
+                                         booking_row("r", None, 받는분전화번호=None, 받는분우편번호=None,
+                                                     **{"받는분주소(전체, 분할)": None, "보내는분성명": None,
+                                                        "보내는분전화번호": None, "품목명": None, "박스수량": None})])
+    assert [a.tracking for a in result.matched()] == ["111"]
+    assert [i.name for i in result.invoices_without_tracking] == ["김철수"]
+    assert result.invoices_without_order == ()
+
+
+def test_booking_form_without_address_column_is_refused():
+    with pytest.raises(ValueError, match="받는분주소"):
+        read_invoice_file(hanjin_xlsx(hanjin_row(1, "1"), columns=["받는분성명", "받는분전화번호", "받는분우편번호", "운송장번호"]))
