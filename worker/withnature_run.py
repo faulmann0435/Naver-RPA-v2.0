@@ -5,7 +5,7 @@ dictionary as [📦 발주 처리], and renames each file 자연이랑_<name>. N
 The converted rows are kept under DATA_DIR/발주기록/자연이랑_주문.json (30 days), so a tracking file
 that arrives later can be matched to them (worker.invoice_run).
 
-    {"O26102986789": {"saved": "2026-10-30", "row": {"수취인명": ..., ...}}, ...}
+    {"O26100000001":{"saved": "2026-10-30", "row": {"수취인명": ..., ...}}, ...}
 """
 from __future__ import annotations
 
