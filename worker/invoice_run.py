@@ -203,11 +203,13 @@ def _portal_rows(assignments: tuple[Assignment, ...], uploaded: dict[str, str]
         if code is None:
             unknown.append(f"{a.recipient} · {a.tracking} · {a.carrier}")
             continue
+        # several boxes join their numbers with ", "; the portal wants one row per (주문번호, 운송장번호)
         for order_id in a.product_order_ids:
-            if f"{order_id}|{a.tracking}" in uploaded:
-                skipped += 1
-            else:
-                rows.append((order_id, a.tracking, code))
+            for tracking in a.tracking.split(", "):
+                if f"{order_id}|{tracking}" in uploaded:
+                    skipped += 1
+                else:
+                    rows.append((order_id, tracking, code))
     return rows, skipped, unknown
 
 

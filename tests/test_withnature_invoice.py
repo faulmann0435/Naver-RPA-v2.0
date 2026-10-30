@@ -102,6 +102,13 @@ def test_unknown_courier_is_left_out_and_listed():
     assert _portal_rows((a,), {}) == ([], 0, ["김철수 · 777 · 택배X"])
 
 
+def test_several_boxes_give_one_row_per_tracking_number():
+    a = Assignment(("O1",), "111, 222", "김철수", "상품", "MATCHED", True)
+    rows, skipped, _ = _portal_rows((a,), {"O1|222": "2026-10-30 10:00"})
+    assert rows == [("O1", "111", "03")]
+    assert skipped == 1
+
+
 def test_one_box_matching_both_channels_is_not_included_anywhere(tmp_path):
     _save(tmp_path, export_row("O1", "홍길동", 받는사람주소=ADDRESS, 우편번호="08239"))
     run = _prepare(tmp_path, [api_item("1")], hanjin_row(1, "111"))
