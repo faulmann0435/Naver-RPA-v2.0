@@ -16,6 +16,7 @@ from core.dictionary import (
 from core.merger import _format_weight
 from core.seed import probe_row, strip_ignored_groups
 from core.template import clean_display_text
+from core.withnature import is_withnature_export, read_withnature_export, to_order_frame
 from store.base import Author, DataStore
 from store.dictionary_repo import AppendResult, append_entries
 from store.validators import Issue, validate_new_entry
@@ -37,6 +38,20 @@ SUGGESTION_COLUMNS = [
     COL_TEMPLATE, COL_QTY1, COL_GROUP, COL_WEIGHT, "product_no", "option_key",
 ]
 DISABLED_COLUMNS = [COL_NAME, COL_OPTION, COL_QTY, COL_COUNT]
+
+
+def withnature_orders(data: bytes) -> pd.DataFrame | None:
+    """A 자연이랑 출고작업관리 Excel as the Naver-shaped order table; None for any other file."""
+    if not is_withnature_export(data):
+        return None
+    return to_order_frame(read_withnature_export(data))
+
+
+def channel_files(files: Sequence[dict], channel: str | None) -> list[dict]:
+    """Purchase-order files, renamed '<channel>_<name>' when the orders came from another channel."""
+    if not channel:
+        return list(files)
+    return [{**f, "filename": f"{channel}_{f['filename']}"} for f in files]
 
 
 def _text(value: object) -> str:

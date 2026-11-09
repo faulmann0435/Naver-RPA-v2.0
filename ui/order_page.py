@@ -9,6 +9,7 @@ from core.dictionary import DictionarySettings, ItemDictionary
 from core.loader import HAS_MSOFFCRYPTO, load_excel, read_csv_with_encoding
 from core.merger import filter_instruction_rows
 from core.pipeline import ProcessResult, process_orders
+from core.withnature import CHANNEL as WITHNATURE
 from store.base import ConflictError, StoreError
 from ui import context
 from ui.option_form import (
@@ -22,26 +23,45 @@ from ui.order_logic import (
     RegisterResult,
     UnmatchedItem,
     build_suggestions,
+    channel_files,
     item_prefix,
     register_items,
     suggestion_values,
     unmatched_items,
+    withnature_orders,
 )
 
 EXCEL_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 REQUIRED_COLUMNS = ["수량", "상품명", "옵션정보", "배송비 묶음번호"]
 S_CHECKED, K_MORE, PAGE_SIZE = "um_checked", "um_more", 10
-S_RESULT, S_DF, S_SUGGEST, S_FILE, S_FLASH = (
-    "order_result", "order_df", "order_suggestions", "last_file_id", "order_flash",
+S_RESULT, S_DF, S_SUGGEST, S_FILE, S_FLASH, S_CHANNEL = (
+    "order_result", "order_df", "order_suggestions", "last_file_id", "order_flash", "order_channel",
 )
 
 
 # ---------------------------------------------------------------- loading
 
+def _read_withnature(uploaded_file) -> pd.DataFrame | None:
+    """The upload as 자연이랑 orders when it is the portal's 출고작업관리 Excel; else None."""
+    try:
+        frame = withnature_orders(uploaded_file.getvalue())
+    except ValueError as e:
+        st.error(str(e))
+        return None
+    if frame is not None:
+        st.info(f"🌿 {WITHNATURE} 주문서로 인식했습니다. 발주서 파일 이름 앞에 '{WITHNATURE}_'가 붙습니다.")
+    return frame
+
+
 def _read_upload(uploaded_file) -> pd.DataFrame | None:
     password = None
     name = (uploaded_file.name or "").lower()
+    st.session_state[S_CHANNEL] = None
     if name.endswith(".xlsx"):
+        withnature = _read_withnature(uploaded_file)
+        if withnature is not None:
+            st.session_state[S_CHANNEL] = WITHNATURE
+            return withnature
         password = st.text_input("주문 엑셀 비밀번호 (없으면 비움)", type="password", key="order_pw")
     try:
         if name.endswith(".xlsx"):
@@ -226,8 +246,9 @@ def _path_expander(result: ProcessResult) -> None:
 
 
 def _downloads(result: ProcessResult) -> None:
-    st.success(f"처리 완료. 총 {len(result.files)}개 업체 파일을 다운로드하세요.")
-    for i, pf in enumerate(result.files):
+    files = channel_files(result.files, st.session_state.get(S_CHANNEL))
+    st.success(f"처리 완료. 총 {len(files)}개 업체 파일을 다운로드하세요.")
+    for i, pf in enumerate(files):
         st.download_button(
             label=f"📥 Download [{pf['vendor']}] File",
             data=pf["data"].getvalue(),
