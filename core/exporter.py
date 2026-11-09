@@ -12,6 +12,9 @@ except ImportError:
 
 # 매핑데이터 value that fills a column with 1, 2, 3 ... per output file (not a column of the order file)
 ROW_NUMBER_SOURCE = "_순번"
+# 칸 이름 that stands for an empty spacer column (blank header, blank cells), so later columns keep
+# their place in a supplier's fixed form. It may appear many times in one form.
+BLANK_HEADER = "(빈 칸)"
 
 
 def excel_column_number(value) -> int | None:
@@ -32,31 +35,43 @@ def _sort_by_excel_column(layout):
     return layout.iloc[order].reset_index(drop=True)
 
 
+def _column_values(r, merged_df, row_count):
+    hc = r.get("HardcodedValue")
+    if pd.notna(hc) and str(hc).strip():
+        return [str(hc).strip()] * row_count
+    src = r.get("SourceCol")
+    src = str(src).strip() if pd.notna(src) else ""
+    if src == ROW_NUMBER_SOURCE:
+        return list(range(1, row_count + 1))
+    if src and src in merged_df.columns:
+        return list(merged_df[src].values)
+    return [""] * row_count
+
+
 def build_output_dataframe(merged_df, output_layout, vendor_id):
     layout = output_layout[output_layout["VendorID"].astype(str).str.strip() == str(vendor_id).strip()]
     if layout.empty:
         return None
     layout = _sort_by_excel_column(layout)
     row_count = len(merged_df)
-    out = {}
+    headers, columns = [], []
     for _, r in layout.iterrows():
         header = str(r["HeaderName"]).strip() if pd.notna(r["HeaderName"]) else ""
         if not header:
             continue
-        hc = r.get("HardcodedValue")
-        if pd.notna(hc) and str(hc).strip():
-            out[header] = [str(hc).strip()] * row_count
+        if header == BLANK_HEADER:
+            headers.append("")
+            columns.append([""] * row_count)
+        elif header in headers:  # same name twice: the later column wins, at the first one's place
+            columns[headers.index(header)] = _column_values(r, merged_df, row_count)
         else:
-            src = r.get("SourceCol")
-            if pd.notna(src) and str(src).strip() == ROW_NUMBER_SOURCE:
-                out[header] = list(range(1, row_count + 1))
-            elif pd.notna(src) and str(src).strip() and str(src).strip() in merged_df.columns:
-                out[header] = merged_df[str(src).strip()].values
-            else:
-                out[header] = [""] * row_count
-    if not out:
+            headers.append(header)
+            columns.append(_column_values(r, merged_df, row_count))
+    if not headers:
         return None
-    return pd.DataFrame(out)
+    out = pd.DataFrame(dict(enumerate(columns)), index=range(row_count), columns=range(len(columns)))
+    out.columns = headers
+    return out
 
 
 # Keywords for address-related columns (for conditional formatting "제주" highlight)
