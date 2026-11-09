@@ -5,6 +5,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from core.exporter import BLANK_HEADER
 from store.base import ConflictError, DataStore, StoreError
 from store.dictionary_repo import now_kst_iso
 from store.layout_repo import OUTPUT_LAYOUT_FILE
@@ -37,7 +38,9 @@ from ui.layout_state import LayoutData
 HELP = (
     "'순서'는 엑셀 파일에서 왼쪽부터 몇 번째 칸인지를 뜻합니다. 저장하면 열(A, B, C…)이 순서대로 다시 매겨집니다. "
     "'고정 글자'를 적으면 모든 줄에 그 글자가 들어가고(넣을 내용보다 우선), 비워 두면 '넣을 내용'이 들어갑니다. "
-    "표 안에서는 한글이 잘 입력되지 않으니, 한글 칸 이름이나 새 고정 글자는 표 아래 '칸 하나 추가·고치기'에서 넣으세요."
+    "표 안에서는 한글이 잘 입력되지 않으니, 한글 칸 이름이나 새 고정 글자는 표 아래 '칸 하나 추가·고치기'에서 넣으세요. "
+    f"업체 양식에 아무것도 없는 칸이 끼어 있으면 칸 이름을 '{BLANK_HEADER}'로 적으세요. 제목도 내용도 없는 빈 칸으로 나가서 "
+    "뒤 칸들이 업체 양식과 같은 자리에 들어갑니다. 여러 번 써도 됩니다."
 )
 DIRECT_INPUT = "✏️ 직접 입력"
 NO_FIXED = "(없음)"

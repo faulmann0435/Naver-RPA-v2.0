@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from core.dictionary import _parse_bool
+from core.exporter import BLANK_HEADER
 from store.csv_codec import from_csv_text
 from store.layout_repo import (
     COLUMN,
@@ -105,12 +106,14 @@ def _filename_issues(form: str, rows: list[tuple[int, dict[str, str]]]) -> list[
 
 
 def _header_issues(form: str, rows: list[tuple[int, dict[str, str]]]) -> list[Issue]:
-    counts = Counter(v.get(HEADER, "") for _, v in rows if v.get(HEADER, ""))
+    counts = Counter(v.get(HEADER, "") for _, v in rows if v.get(HEADER, "") not in ("", BLANK_HEADER))
     issues: list[Issue] = []
     for position, values in rows:
         header = values.get(HEADER, "")
         if not header:
             issues.append(Issue("error", position, HEADER, f"[{form}] 칸 이름이 비어 있는 칸이 있습니다 (열 {values.get(COLUMN, '?')})."))
+        elif header == BLANK_HEADER:
+            continue
         elif counts[header] > 1:
             issues.append(Issue("error", position, HEADER, f"[{form}] 칸 이름 '{header}'이(가) {counts[header]}번 중복되어 있습니다. 칸 이름은 겹치면 안 됩니다."))
     return issues
@@ -122,6 +125,12 @@ def _row_warnings(
     issues: list[Issue] = []
     for position, values in rows:
         source, fixed = values.get(SOURCE, ""), values.get(FIXED, "")
+        if values.get(HEADER, "") == BLANK_HEADER and (source or fixed):
+            issues.append(Issue(
+                "warning", position, SOURCE,
+                f"[{form}] '{BLANK_HEADER}' 칸은 항상 비어서 나갑니다. 적어 둔 '넣을 내용'·'고정 글자'는 쓰이지 않습니다.",
+            ))
+            continue
         if source and fixed:
             issues.append(Issue(
                 "warning", position, FIXED,
